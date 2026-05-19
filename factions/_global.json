@@ -1,0 +1,8 @@
+{
+  "default_faction": "AOER",
+  "shared_assets": [],
+  "recolor": {
+    "border_thickness": 1,
+    "mode": "tint"
+  }
+}

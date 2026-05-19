@@ -1,0 +1,15 @@
+{
+  "key": "MDC",
+  "display_name": "Minevia Delivery Corporation",
+  "color_palette": {
+    "base_color": "#5b3a1a",
+    "stripe_color": "#f5c542",
+    "border_color": "#ffffff"
+  },
+  "assets": [
+    "Collector Ribbon 1st class",
+    "QRM Commendation",
+    "Quartermaster Gorget Patches",
+    "Diamond Sack"
+  ]
+}

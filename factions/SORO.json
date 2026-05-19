@@ -1,0 +1,15 @@
+{
+  "key": "SORO",
+  "display_name": "Specialised Oil Rig Operators",
+  "color_palette": {
+    "base_color": "#0d0d0d",
+    "stripe_color": "#d72638",
+    "border_color": "#f2a900"
+  },
+  "assets": [
+    "Pressure",
+    "CE Commendation",
+    "Custom gorget",
+    "Teto Medal Shiny"
+  ]
+}

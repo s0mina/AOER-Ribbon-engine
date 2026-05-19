@@ -1,0 +1,5 @@
+Pillow>=9.0
+numpy>=1.22
+# Optional — enables drag-and-drop PNG import from the OS file manager.
+# The engine still runs without it, drag-drop just won't work.
+tkinterdnd2>=0.3

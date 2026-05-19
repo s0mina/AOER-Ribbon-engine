@@ -1,0 +1,10 @@
+{
+  "recolor": {
+    "stripe": true,
+    "base": true,
+    "border": true
+  },
+  "colors": {
+    "border": "#111111"
+  }
+}

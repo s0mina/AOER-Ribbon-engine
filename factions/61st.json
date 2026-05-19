@@ -1,0 +1,15 @@
+{
+  "key": "61st",
+  "display_name": "61st West Noobic Regiment",
+  "color_palette": {
+    "base_color": "#2f4f2f",
+    "stripe_color": "#b22222",
+    "border_color": "#d4af37"
+  },
+  "assets": [
+    "Service Ribbon 1st Class",
+    "MR Commendation",
+    "ANROCOM Gorget Patches",
+    "Quantum Medal"
+  ]
+}

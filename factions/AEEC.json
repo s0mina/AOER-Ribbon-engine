@@ -1,0 +1,15 @@
+{
+  "key": "AEEC",
+  "display_name": "Athena Energy Engineering Corporation",
+  "color_palette": {
+    "base_color": "#1a1a1a",
+    "stripe_color": "#ff8c00",
+    "border_color": "#ffd700"
+  },
+  "assets": [
+    "Engineer Ribbon 1st class",
+    "ANRO R&D Commendation",
+    "Custom gorget",
+    "Galaxy Sack"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "key": "AISF",
+  "display_name": "Aethena Interior Security Force",
+  "color_palette": {
+    "base_color": "#1b2a4e",
+    "stripe_color": "#c0c0c0",
+    "border_color": "#000000"
+  },
+  "assets": [
+    "ANRO Sentry",
+    "IA Commendation",
+    "Custom gorget",
+    "Diamond Medal"
+  ]
+}

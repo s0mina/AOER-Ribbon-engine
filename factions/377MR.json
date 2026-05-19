@@ -1,0 +1,15 @@
+{
+  "key": "377MR",
+  "display_name": "377th Mechanized Regiment",
+  "color_palette": {
+    "base_color": "#3b4a2a",
+    "stripe_color": "#8a8a8a",
+    "border_color": "#000000"
+  },
+  "assets": [
+    "VDV",
+    "ANRD Commendation",
+    "Senior Leadership gorget",
+    "Quantum Medal"
+  ]
+}

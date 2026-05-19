@@ -1,0 +1,13 @@
+{
+  "key": "AOER",
+  "display_name": "Atena Oil Rig Extraction",
+  "hidden": true,
+  "color_palette": {
+    "base_color": "#808080",
+    "stripe_color": "#cccccc",
+    "border_color": "#282828"
+  },
+  "assets": [
+    "ANRO Defense Force"
+  ]
+}

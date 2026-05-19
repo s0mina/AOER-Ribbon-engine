@@ -1,0 +1,15 @@
+{
+  "key": "4PSC",
+  "display_name": "4th Polar Security Corporation",
+  "color_palette": {
+    "base_color": "#e0f0ff",
+    "stripe_color": "#3a7ca5",
+    "border_color": "#0a1f33"
+  },
+  "assets": [
+    "Mount Everest",
+    "LO&HR Commendation",
+    "Quartermaster Gorget Patches",
+    "Teto Medal"
+  ]
+}
