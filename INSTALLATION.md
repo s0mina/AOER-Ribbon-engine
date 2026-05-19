@@ -14,8 +14,8 @@ bottom — almost every common problem is listed there.
 | Your computer | Do this |
 |---|---|
 | **Windows** | Double-click `run.bat` |
-| **Mac** | Open Terminal in this folder, type `./run.sh` |
-| **Linux** | Open a terminal in this folder, type `./run.sh` |
+| **Mac** | Open a Terminal in this folder, type `./run.sh` |
+| **Linux** | Open a Terminal in this folder, type `./run.sh` |
 
 The first launch takes ~30 seconds (it's installing what it needs). After
 that, it opens instantly. **That's it — you can stop reading here.**
