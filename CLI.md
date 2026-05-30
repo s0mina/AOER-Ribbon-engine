@@ -1,9 +1,9 @@
 # Command-Line Renderer
 
 Most people will use the regular GUI (the window that opens when you
-double-click `run.bat` or run `./run.sh`). This file is for the **other**
-way to use the engine: a command-line tool that renders ribbons without
-opening any window.
+run `AOER-Ribbon-engine.exe` on Windows or `./run.sh` on Mac/Linux). This
+file is for the **other** way to use the engine: a command-line tool that
+renders ribbons without opening any window.
 
 > **New here?** Read [INSTALLATION.md](INSTALLATION.md) first to get the
 > engine set up. Come back here only if you want to batch-export ribbons
@@ -24,9 +24,12 @@ GUI does everything the CLI does, and more.
 
 ## Getting it running
 
-You need the engine installed first — same Python and `.venv` as the
-GUI. If `./run.sh` (Mac/Linux) or `run.bat` (Windows) has worked at
-least once, you're set.
+The CLI runs from the **source code**, so you need Python and the project
+dependencies set up — it's not part of the Windows `.exe`. On Mac/Linux,
+if `./run.sh` has worked at least once you're already set. On Windows (or
+if you've never used `run.sh`), do the one-time manual setup from
+[INSTALLATION.md](INSTALLATION.md) — "Running the engine (manual mode)":
+create a `.venv`, `pip install -r requirements.txt`.
 
 Then from a terminal inside the project folder:
 

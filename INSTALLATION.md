@@ -13,12 +13,14 @@ bottom — almost every common problem is listed there.
 
 | Your computer | Do this |
 |---|---|
-| **Windows** | Double-click `run.bat` |
+| **Windows** | [Download the latest release](https://github.com/s0mina/AOER-Ribbon-engine/releases/latest), unzip it, double-click **`AOER-Ribbon-engine.exe`** |
 | **Mac** | Open a Terminal in this folder, type `./run.sh` |
 | **Linux** | Open a Terminal in this folder, type `./run.sh` |
 
-The first launch takes ~30 seconds (it's installing what it needs). After
-that, it opens instantly. **That's it — you can stop reading here.**
+**Windows needs nothing installed** — the `.exe` is self-contained, no
+Python required. On Mac/Linux the first launch takes ~30 seconds (it's
+installing what it needs), then opens instantly. **That's it — you can
+stop reading here.**
 
 If the short version didn't work, read on.
 
@@ -26,15 +28,14 @@ If the short version didn't work, read on.
 
 ## What you'll need
 
-Just one thing: **Python 3.9 or newer.** Everything else (Pillow, NumPy)
-is installed automatically by the launcher script. You do not need to know
-Python to use the engine — you only need it installed.
+- **Windows:** **nothing.** The `.exe` release is fully self-contained —
+  download it, unzip, run. Skip straight to the Windows section below.
+- **Mac / Linux:** **Python 3.9 or newer.** Everything else (Pillow,
+  NumPy) is installed automatically by the launcher script. You do not
+  need to know Python to use the engine — you only need it installed.
 
-To check whether you already have Python:
+To check whether you already have Python (Mac/Linux only):
 
-- **Windows:** press the Windows key, type `cmd`, hit Enter. In the black
-  window type `python --version` and press Enter. If you see something
-  like `Python 3.11.4`, you're set.
 - **Mac:** press Cmd+Space, type `Terminal`, hit Enter. Type
   `python3 --version` and press Enter.
 - **Linux:** open your terminal. Type `python3 --version`.
@@ -46,32 +47,47 @@ Otherwise, install Python first — instructions are in each per-OS section.
 
 ## Windows
 
-### Step 1 — Install Python (skip if you already have it)
+**You do not need Python.** The Windows download is a ready-to-run
+application. Nothing gets installed on your computer and nothing is
+permanently changed — it all lives inside the folder you unzip.
 
-1. Go to <https://www.python.org/downloads/>.
-2. Click the big yellow **Download Python 3.x.x** button.
-3. Run the installer.
-4. **VERY IMPORTANT:** on the first screen of the installer, check the box
-   that says **"Add python.exe to PATH"** at the bottom. If you skip this,
-   the launcher won't find Python and you'll have to reinstall.
-5. Click **Install Now** and wait until it says "Setup was successful."
+### Step 1 — Download
 
-### Step 2 — Run the engine
+1. Go to the releases page:
+   <https://github.com/s0mina/AOER-Ribbon-engine/releases/latest>
+2. Under **Assets**, click **`AOER-Ribbon-engine-windows.zip`** to download it.
 
-1. Find the `Ribbon Engine v3` folder in File Explorer.
-2. Double-click **`run.bat`**.
-3. A black "Command Prompt" window will appear. The first time you run it,
-   it'll say "Creating virtual environment..." — wait about 30 seconds.
-4. The Ribbon Engine window opens. You're done.
+### Step 2 — Unzip
 
-If Windows shows a blue "Windows protected your PC" warning when you
-double-click, click **More info** → **Run anyway**. (This happens because
-the `.bat` file isn't signed by Microsoft — it's just a script we wrote.
-Look at `run.bat` in Notepad if you want to verify what it does.)
+1. Find the downloaded `AOER-Ribbon-engine-windows.zip` (usually in your
+   Downloads folder).
+2. Right-click it → **Extract All…** → **Extract**. You now have a folder
+   with the application inside.
 
-**Do not delete the `.venv` folder** that gets created. That's where the
-engine's helper libraries live. If you do delete it, the next launch will
-just rebuild it automatically (and take another 30 seconds).
+> **Don't run it from inside the zip.** Windows lets you peek into a zip
+> without unzipping, but the app won't find its files that way. Extract
+> first, then open the extracted folder.
+
+### Step 3 — Run
+
+Open the extracted folder and double-click **`AOER-Ribbon-engine.exe`**.
+The Ribbon Engine window opens. That's it.
+
+If Windows shows a blue **"Windows protected your PC"** warning, click
+**More info** → **Run anyway**. This happens with any app that isn't
+code-signed (signing costs money per year); it does not mean anything is
+wrong with the app.
+
+### Step 4 — Add your faction artwork
+
+If you were sent ribbon artwork as a separate zip, extract its contents
+into the **`assets/`** folder next to the `.exe`, keeping the faction
+folder names exactly as given (e.g. `assets/MDC/ribbons/...`). The engine
+picks them up the next time you open it — no rebuild needed.
+
+**To move the app**, just move the whole extracted folder (the `.exe`
+plus the `assets/`, `factions/`, etc. folders travel together). To
+uninstall, delete the folder. Nothing is left behind anywhere else.
 
 ---
 
@@ -194,18 +210,13 @@ the same package — see the Linux table above).
 **Fix on Windows/Mac:** reinstall Python from python.org with default
 options — Tkinter ships in the installer.
 
-### The black window opens, prints stuff, then closes immediately
+### The app won't open / closes immediately (Mac/Linux source run)
 
-**Cause:** the launcher hit an error and exited.
-**Fix:** open the black window yourself first, then run the launcher from
-inside it so you can read the error.
-
-- **Windows:** press Windows key → type `cmd` → press Enter. In the black
-  window, type `cd "C:\path\to\Ribbon Engine v3"` (use the real path) and
-  press Enter. Then type `run.bat` and press Enter. Whatever error appears
-  is the one to fix.
-- **Mac/Linux:** the terminal stays open after `./run.sh` exits, so the
-  error is already visible.
+**Cause:** the launcher hit an error and exited. (Windows users on the
+`.exe` don't hit this — if the `.exe` won't open, see the SmartScreen
+note below.)
+**Fix (Mac/Linux):** the terminal stays open after `./run.sh` exits, so
+the error is already visible — read it there.
 
 ### "Permission denied" when running `./run.sh`
 
@@ -215,12 +226,13 @@ inside it so you can read the error.
 chmod +x run.sh
 ```
 
-### Windows SmartScreen blocks `run.bat`
+### Windows SmartScreen blocks `AOER-Ribbon-engine.exe`
 
-**Cause:** Windows is suspicious of unsigned scripts.
-**Fix:** click **More info** → **Run anyway**. You can inspect `run.bat`
-in Notepad first if you want to see what it does. It's about 30 lines and
-just sets up Python.
+**Cause:** Windows warns about any app that isn't code-signed, which is
+normal for free/indie software (signing costs money per year).
+**Fix:** click **More info** → **Run anyway**. The `.exe` is built
+automatically from this public source code by GitHub Actions, so you can
+see exactly what goes into it.
 
 ### The window opens but my faction isn't in the dropdown
 
@@ -263,10 +275,12 @@ e.g. `[John_IA]_[2026-05-17-23-17-56].png`.
 
 ### "I want to use this on more than one computer"
 
-You can copy the entire `Ribbon Engine v3/` folder to a USB stick or
-cloud drive. The launcher rebuilds `.venv/` automatically on each new
-machine, so just double-click `run.bat` (or `./run.sh`) on the new
-computer. Your settings and loadouts come along with the folder.
+- **Windows:** copy the entire extracted application folder (the `.exe`
+  plus its `assets/`, `factions/`, etc.) to a USB stick or cloud drive.
+  Double-click `AOER-Ribbon-engine.exe` on the other machine — nothing to
+  install. Your settings and loadouts travel with the folder.
+- **Mac/Linux:** copy the project folder; the launcher rebuilds `.venv/`
+  automatically on each new machine, so just run `./run.sh`.
 
 ### "Can I use this without internet?"
 

@@ -37,7 +37,6 @@ Ribbon Engine v3/
 ├── factions.py              # Faction registry + recolor pipeline (don't run directly)
 ├── cli.py                   # Headless renderer for scripts/batches
 ├── test_factions.py         # Unit tests
-├── run.bat                  # Windows launcher — double-click this
 ├── run.sh                   # Mac/Linux launcher — `./run.sh` from a terminal
 ├── requirements.txt         # What pip installs (Pillow + NumPy)
 │
@@ -76,11 +75,17 @@ that faction. To restrict a recipient, ship them only the
 See [INSTALLATION.md](INSTALLATION.md) for the full setup steps. Once
 installed, the short version is:
 
-- **Windows:** double-click `run.bat`.
-- **Mac / Linux:** open a terminal in the folder, type `./run.sh`.
+- **Windows:** download the latest release, unzip it, and double-click
+  **`AOER-Ribbon-engine.exe`**. No Python, no setup — it just runs.
+  → <https://github.com/s0mina/AOER-Ribbon-engine/releases/latest>
+- **Mac / Linux:** open a terminal in the folder, type `./run.sh`. The
+  first launch installs Pillow + NumPy into a local `.venv/` folder
+  (~30 seconds); every launch after that is instant.
 
-The first launch installs Pillow + NumPy into a local `.venv/` folder
-(takes ~30 seconds). Every launch after that is instant.
+> The Windows `.exe` is built automatically from the source by GitHub
+> Actions on every release tag, so it always matches the code here.
+> Developers who want to run from source on Windows can use the manual
+> `python ribbonengine.py` steps in [INSTALLATION.md](INSTALLATION.md).
 
 ## Using the engine
 
