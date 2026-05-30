@@ -59,9 +59,26 @@ class AssetUrlTests(unittest.TestCase):
         }
         self.assertEqual(updater.asset_download_url(release), "http://x/win")
 
+    def test_picks_versioned_asset(self):
+        # Releases now bake the version into the filename; the prefix/suffix
+        # match must still find it.
+        release = {
+            "assets": [
+                {"name": "notes.txt", "browser_download_url": "http://x/notes"},
+                {
+                    "name": "AOER-Ribbon-engine-windowsv1.4.zip",
+                    "browser_download_url": "http://x/v14",
+                },
+            ]
+        }
+        self.assertEqual(updater.asset_download_url(release), "http://x/v14")
+
     def test_missing_asset_returns_empty(self):
         self.assertEqual(updater.asset_download_url({"assets": []}), "")
         self.assertEqual(updater.asset_download_url({}), "")
+        # A zip that isn't our Windows asset must not be matched.
+        other = {"assets": [{"name": "something-else.zip", "browser_download_url": "u"}]}
+        self.assertEqual(updater.asset_download_url(other), "")
 
 
 class CheckForUpdateTests(unittest.TestCase):

@@ -90,22 +90,29 @@ jobs:
           }
 
       - name: Zip it up
+        # Bake the version into the asset name on tagged builds so users can
+        # tell releases apart at a glance, e.g. AOER-Ribbon-engine-windowsv1.4.zip.
+        # github.ref_name is the tag (e.g. "v1.4") on tag builds; untagged
+        # builds (main/PR) fall back to the plain name. The chosen filename is
+        # exported as ASSET_ZIP so later steps reference the exact file.
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist/AOER-Ribbon-engine/*" `
-            -DestinationPath "AOER-Ribbon-engine-windows.zip" -Force
+          $ver = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF_NAME } else { "" }
+          $zip = "AOER-Ribbon-engine-windows$ver.zip"
+          Compress-Archive -Path "dist/AOER-Ribbon-engine/*" -DestinationPath $zip -Force
+          "ASSET_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload as a build artifact (download from the Actions run)
         uses: actions/upload-artifact@v4
         with:
           name: AOER-Ribbon-engine-windows
-          path: AOER-Ribbon-engine-windows.zip
+          path: ${{ env.ASSET_ZIP }}
 
       - name: Publish a Release (only when you push a version tag like v1.0)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: AOER-Ribbon-engine-windows.zip
+          files: ${{ env.ASSET_ZIP }}
           # Auto-build the release body from the commits/PRs since the previous
           # tag, so every tagged release gets a changelog without manual notes.
           generate_release_notes: true

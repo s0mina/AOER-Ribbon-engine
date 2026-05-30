@@ -26,10 +26,17 @@ import zipfile
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+import urllib.parse
 import urllib.request
 
 GITHUB_REPO = "s0mina/AOER-Ribbon-engine"
-ASSET_NAME = "AOER-Ribbon-engine-windows.zip"
+# Releases name the Windows zip with the version baked in so users can tell
+# builds apart at a glance, e.g. ``AOER-Ribbon-engine-windowsv1.4.zip``. The
+# updater therefore matches on prefix+suffix rather than an exact filename;
+# ASSET_NAME is the legacy un-versioned name still accepted for old releases.
+ASSET_PREFIX = "AOER-Ribbon-engine-windows"
+ASSET_SUFFIX = ".zip"
+ASSET_NAME = f"{ASSET_PREFIX}{ASSET_SUFFIX}"
 USER_AGENT = "AOER-Ribbon-engine-Updater"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
 API_LATEST = "https://api.github.com/repos/{repo}/releases/latest"
@@ -111,9 +118,22 @@ def fetch_latest_release(repo: str = GITHUB_REPO, timeout: int = 15) -> dict:
 
 
 def asset_download_url(release: dict, asset_name: str = ASSET_NAME) -> str:
-    """Pull the Windows zip's download URL out of a release payload."""
-    for asset in release.get("assets", []) or []:
+    """Pull the Windows zip's download URL out of a release payload.
+
+    Accepts the versioned asset name (``AOER-Ribbon-engine-windowsv1.4.zip``) by
+    matching the ``ASSET_PREFIX``/``ASSET_SUFFIX`` pattern, and still honors the
+    legacy un-versioned ``AOER-Ribbon-engine-windows.zip`` exactly so older
+    releases keep working.
+    """
+    assets = release.get("assets", []) or []
+    # Exact legacy name wins if present (un-versioned older releases).
+    for asset in assets:
         if asset.get("name") == asset_name:
+            return asset.get("browser_download_url", "") or ""
+    # Otherwise take the first versioned Windows zip.
+    for asset in assets:
+        name = asset.get("name", "") or ""
+        if name.startswith(ASSET_PREFIX) and name.endswith(ASSET_SUFFIX):
             return asset.get("browser_download_url", "") or ""
     return ""
 
@@ -154,7 +174,10 @@ def download_asset(
     the server omits Content-Length).
     """
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    out_path = os.path.join(dest_dir, ASSET_NAME)
+    # Save under the asset's real (versioned) filename when the URL exposes it,
+    # falling back to the legacy name. Only used as a temp file before staging.
+    filename = os.path.basename(urllib.parse.urlsplit(url).path) or ASSET_NAME
+    out_path = os.path.join(dest_dir, filename)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         read = 0
