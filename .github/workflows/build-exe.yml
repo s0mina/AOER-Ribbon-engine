@@ -68,8 +68,12 @@ jobs:
         #             plays nicely with antivirus, easy to ship data alongside).
         # --windowed: no console window pops up behind the GUI.
         # --name    : the name of the exe / folder.
+        # --collect-all tkinterdnd2: bundle the native tkdnd Tcl library that
+        #   drag-and-drop needs. Without it, TkinterDnD.Tk() builds its window
+        #   then fails to load tkdnd at runtime, leaving a phantom empty "tk"
+        #   window and silently disabling file drops.
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name "AOER-Ribbon-engine" ribbonengine.py
+          pyinstaller --noconfirm --onedir --windowed --name "AOER-Ribbon-engine" --collect-all tkinterdnd2 ribbonengine.py
 
       - name: Copy data folders next to the exe
         # The engine reads its assets AND writes its output in folders next to

@@ -163,7 +163,7 @@ METADATA_SCHEMA_VERSION = 2
 
 # The app's own release version, compared against the latest GitHub Release tag
 # by the self-updater. Keep this in lock-step with the pushed ``vX.Y`` tag.
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 
 
 class _Tooltip:
@@ -443,12 +443,27 @@ except Exception:
 
 
 def _createRoot() -> tk.Tk:
-    """Return a Tk root that supports OS file drops if tkinterdnd2 is installed."""
+    """Return a Tk root that supports OS file drops if tkinterdnd2 is installed.
+
+    ``TkinterDnD.Tk()`` builds the Tk window FIRST and only then loads the
+    native ``tkdnd`` Tcl package. If that load fails — most commonly in a frozen
+    build where the tkdnd binaries weren't bundled (use PyInstaller
+    ``--collect-all tkinterdnd2``) — the exception propagates out *after* the
+    window already exists, orphaning it as an empty "tk" window and forcing the
+    plain-Tk fallback (which silently has no drag-and-drop). Tear that orphan
+    down before falling back so we never leave a phantom window on screen.
+    """
     if _TKDND_AVAILABLE:
         try:
             return tkinterdnd2.TkinterDnD.Tk()
         except Exception:
-            pass
+            stray = getattr(tk, "_default_root", None)
+            if stray is not None:
+                try:
+                    stray.destroy()
+                except Exception:
+                    pass
+                tk._default_root = None
     return tk.Tk()
 
 
