@@ -12,6 +12,11 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Allow the workflow's token to create/upload a GitHub Release. Without this,
+# repos that default to a read-only token get a 403 on the release step.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
