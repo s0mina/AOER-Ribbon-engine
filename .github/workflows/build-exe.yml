@@ -106,3 +106,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: AOER-Ribbon-engine-windows.zip
+          # Auto-build the release body from the commits/PRs since the previous
+          # tag, so every tagged release gets a changelog without manual notes.
+          generate_release_notes: true
