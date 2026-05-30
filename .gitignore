@@ -23,3 +23,7 @@ Engine Profiles/*
 # Per-user saved presets (don't ship one user's loadouts to the repo)
 loadouts/*
 !loadouts/.gitkeep
+
+# Local-only throwaway faction for live testing — never ship to prod
+assets/TESTFACTION/
+factions/TESTFACTION.json
