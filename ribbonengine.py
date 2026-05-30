@@ -163,7 +163,7 @@ METADATA_SCHEMA_VERSION = 2
 
 # The app's own release version, compared against the latest GitHub Release tag
 # by the self-updater. Keep this in lock-step with the pushed ``vX.Y`` tag.
-APP_VERSION = "1.4"
+APP_VERSION = "1.4.1"
 
 
 class _Tooltip:
@@ -1287,10 +1287,23 @@ class RibbonEngineApp:
         self.profileData = ensureProfileFile(self.profileName)
         applyProfile(self.profileData)
 
+        # Create the Tk root FIRST, before any messagebox/Variable. A parent-less
+        # dialog (or a tk Variable) created earlier would auto-spawn a *second*,
+        # stray default root, leaving tkinter._default_root pointing at a different
+        # Tcl interpreter than our widgets. With tkinterdnd2's TkinterDnD.Tk()
+        # (bundled in the frozen build) that split surfaces as the fatal
+        # `image "pyimageN" doesn't exist` on the first preview. Building the real
+        # root up front guarantees every Variable/PhotoImage binds to it.
+        self.root = _createRoot()
+
         try:
             self.factionRegistry = getFactionRegistry()
         except (FileNotFoundError, ValueError) as exc:
-            messagebox.showerror("Faction config error", f"{exc}\nFalling back to AOER defaults.")
+            messagebox.showerror(
+                "Faction config error",
+                f"{exc}\nFalling back to AOER defaults.",
+                parent=self.root,
+            )
             self.factionRegistry = None
 
         # Recolor options are global (apply to every faction) and persisted
@@ -1363,7 +1376,6 @@ class RibbonEngineApp:
         # Drag-to-place runtime state — populated in mouse callbacks.
         self._dragState: Optional[dict] = None
 
-        self.root = _createRoot()
         self.root.title("Ribbon Engine")
         self.root.geometry("700x500")
         self.root.option_add("*Font", ("Tahoma", 9))
@@ -3225,7 +3237,7 @@ class RibbonEngineApp:
                 return
 
         preview = self._centeredPreview(preview, hoverPreviewSize, self.themeBgRgb + (255,))
-        self.hoverPreviewImg = ImageTk.PhotoImage(preview)
+        self.hoverPreviewImg = ImageTk.PhotoImage(preview, master=self.root)
         self.hoverPreviewLabel.config(image=self.hoverPreviewImg)
         self.hoverPreviewLabel.image = self.hoverPreviewImg
         self.hoverNameLabel.config(text=item.name)
@@ -3236,7 +3248,7 @@ class RibbonEngineApp:
 
     def clearHoverPreview(self) -> None:
         blank = Image.new("RGBA", (hoverPreviewSize, hoverPreviewSize), self.themeBgRgb + (255,))
-        self.hoverPreviewImg = ImageTk.PhotoImage(blank)
+        self.hoverPreviewImg = ImageTk.PhotoImage(blank, master=self.root)
         self.hoverPreviewLabel.config(image=self.hoverPreviewImg)
         self.hoverPreviewLabel.image = self.hoverPreviewImg
         self.hoverNameLabel.config(text="")
@@ -3270,7 +3282,9 @@ class RibbonEngineApp:
 
     def _setPreviewImage(self, image: Image.Image) -> None:
         previewSize = int(imageSize * self.previewScale)
-        self.previewImg = ImageTk.PhotoImage(image.resize((previewSize, previewSize), Image.NEAREST))
+        self.previewImg = ImageTk.PhotoImage(
+            image.resize((previewSize, previewSize), Image.NEAREST), master=self.root
+        )
         self.labelPreview.config(image=self.previewImg)
         self.labelPreview.image = self.previewImg
 
@@ -3792,7 +3806,7 @@ class RibbonEngineApp:
                 cache[name] = None
                 return None
             scaled = self._centeredPreview(image, size, (0, 0, 0, 0))
-            photo = ImageTk.PhotoImage(scaled)
+            photo = ImageTk.PhotoImage(scaled, master=self.root)
             cache[name] = photo
             return photo
         try:
@@ -3829,7 +3843,7 @@ class RibbonEngineApp:
             cache[name] = None
             return None
         thumb = image.resize((size, size), Image.NEAREST)
-        photo = ImageTk.PhotoImage(thumb)
+        photo = ImageTk.PhotoImage(thumb, master=self.root)
         cache[name] = photo
         return photo
 
@@ -4985,7 +4999,7 @@ class RibbonEngineApp:
                 continue
             w, h = img.size
             big = img.resize((w * scale, h * scale), Image.NEAREST)
-            photo = ImageTk.PhotoImage(big)
+            photo = ImageTk.PhotoImage(big, master=self.root)
             thumbStore.append(photo)
             canvas.create_image(x, 12, image=photo, anchor="nw")
             canvas.create_text(
@@ -5341,7 +5355,7 @@ class RibbonEngineApp:
         except Exception:
             return None
         img = img.resize((self._MANUAL_CELL_W, self._MANUAL_CELL_H), Image.NEAREST)
-        return ImageTk.PhotoImage(img)
+        return ImageTk.PhotoImage(img, master=self.root)
 
     def _redrawManualGrid(self) -> None:
         """Repaint the manual placement canvas from scratch.
