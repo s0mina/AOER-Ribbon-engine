@@ -19,3 +19,7 @@ ribbonoutput/*
 settings.json
 Engine Profiles/*
 !Engine Profiles/.gitkeep
+
+# Per-user saved presets (don't ship one user's loadouts to the repo)
+loadouts/*
+!loadouts/.gitkeep
