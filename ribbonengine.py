@@ -25,6 +25,8 @@ from factions import (
     RecolorOptions,
     load_faction_registry,
 )
+from profiles import LayoutProfile
+from renderer import RibbonRenderer
 
 
 # Image/layout constants
@@ -57,6 +59,11 @@ pocketRightOffset = 0
 pocketXOffset = 0
 corpusXOffset = 0
 ribbonsRightAlignOffset = 0
+
+# The de-globalized view of the active profile's render-relevant layout. Built
+# by applyProfile() alongside the legacy globals above; the renderer reads this
+# object instead of the scattered globals (see renderer.py / Stage 2).
+currentLayout: LayoutProfile = LayoutProfile()
 
 # Medal name lists (filenames without .png)
 awardMedalNames = {
@@ -1033,6 +1040,7 @@ def applyProfile(profile: dict) -> None:
     global overlayTemplateSize
     global overlayFrontCropBox
     global profileSelectedShirt
+    global currentLayout
 
     imageSize = max(1, _safeInt(profile.get("image_size", imageSize), imageSize))
     ribbonAreaWidth = max(1, _safeInt(profile.get("ribbon_area_width", ribbonAreaWidth), ribbonAreaWidth))
@@ -1131,6 +1139,11 @@ def applyProfile(profile: dict) -> None:
     else:
         profileSelectedShirt = ""
 
+    # De-globalized snapshot of the render-relevant layout. Parsed straight from
+    # the same profile dict so it stays in lock-step with the legacy globals
+    # above; the renderer consumes this instead of reaching for module globals.
+    currentLayout = LayoutProfile.from_dict(profile)
+
 
 def _hexToRgb(value: str) -> tuple[int, int, int]:
     value = value.lstrip("#")
@@ -1198,75 +1211,6 @@ def _safeInt(value, default: int) -> int:
         return default
 
 
-def _buildPocketCenters(baseX: int, selectedCount: int) -> list[int]:
-    slotMap = {
-        "left": baseX,
-        "middle": baseX + pocketColSpacing,
-        "right": baseX + (pocketColSpacing * 2),
-    }
-    order = medalSingleOrder if selectedCount == 1 else medalMultiOrder
-    return [slotMap[token] for token in order]
-
-
-def _buildRowImages(items: list[AssetItem], safeLoad: Callable[[AssetItem], Optional[Image.Image]]) -> tuple[list[tuple[AssetItem, Image.Image, int, int]], int, int]:
-    rowImages: list[tuple[AssetItem, Image.Image, int, int]] = []
-    totalWidth = 0
-    rowHeight = 0
-    for item in items:
-        piece = safeLoad(item)
-        if piece is None:
-            continue
-        w, h = piece.size
-        rowImages.append((item, piece, w, h))
-        totalWidth += w
-        rowHeight = max(rowHeight, h)
-    return rowImages, totalWidth, rowHeight
-
-
-def _centeredRowStart(totalWidth: int, areaX: int, areaWidth: int, itemCount: int, offset: int = 0) -> int:
-    rowCenter = areaX + areaWidth // 2
-    if itemCount == 1:
-        return rowCenter - totalWidth // 2 - 1 + offset
-    if itemCount == 4:
-        return rowCenter - totalWidth // 2 + 1 + offset
-    return rowCenter - totalWidth // 2 + offset
-
-
-def _rightAlignedRowStart(totalWidth: int, itemCount: int, areaX: int, areaWidth: int, offset: int = 0) -> int:
-    widthWithSpacing = totalWidth - max(itemCount - 1, 0)
-    rightEdge = areaX + areaWidth - 1
-    return rightEdge - widthWithSpacing + offset
-
-
-def _computeRibbonSlotGrid(maxRows: int = 10, ribbonW: int = 11, ribbonH: int = 5) -> list[tuple[int, int]]:
-    """Fixed slot positions for manual ribbon placement.
-
-    Each row is treated as full-capacity so the grid is deterministic regardless of
-    how many ribbons are placed. Slot 0 is the leftmost ribbon in the bottom row
-    (visually matches the engine's auto-layout, which stacks upward).
-    """
-    originX, originY = partCoords["ribbons"]
-    slots: list[tuple[int, int]] = []
-    y = originY
-    for rowNum in range(1, maxRows + 1):
-        if rowNum < ribbonRightStartRow:
-            cap, alignRight = ribbonCenteredRowCapacity, False
-        elif rowNum == ribbonRightStartRow:
-            cap, alignRight = ribbonRightFirstRowCapacity, True
-        else:
-            cap, alignRight = ribbonRightSubsequentRowCapacity, True
-        widthWithSpacing = cap * ribbonW - max(cap - 1, 0)
-        if alignRight:
-            # Match _rightAlignedRowStart: rightEdge = areaX + areaWidth - 1
-            xStart = originX + ribbonAreaWidth - 1 - widthWithSpacing + ribbonsRightAlignOffset
-        else:
-            xStart = originX + (ribbonAreaWidth - widthWithSpacing) // 2 + ribbonsRightAlignOffset
-        for i in range(cap):
-            slots.append((xStart + i * (ribbonW - 1), y))
-        y -= (ribbonH - 1)
-    return slots
-
-
 def _defaultOutputFilename(nameplate: str) -> str:
     """Format: `[NAMETAPE]_[YYYY-MM-DD-HH-MM-SS].png`.
 
@@ -1284,378 +1228,25 @@ def _defaultOutputFilename(nameplate: str) -> str:
     return f"[{safeName}]_[{stamp}].png"
 
 
-class RibbonRenderer:
-    def __init__(self, groups: dict[str, list[AssetItem]]):
-        self.groups = groups
 
-    @staticmethod
-    def _newUsedSlots() -> dict[str, set[str]]:
-        return {
-            "sacks": set(),
-            "corpus": set(),
-            "gorget": set(),
-            "spbadge": set(),
-            "commendations": set(),
-            "ribbons": set(),
-        }
+def makeRenderer(groups):
+    """Construct a display-free RibbonRenderer wired to this module's loaders.
 
-    def buildImage(
-        self,
-        selectedNames: set[str],
-        nameplateText: str,
-        baseImage: Optional[Image.Image],
-        requireNameForNew: bool,
-        errorCallback: Optional[Callable[[str], None]],
-        faction: Optional[str] = None,
-        customOffsets: Optional[dict[str, tuple[int, int]]] = None,
-        placements: Optional[list[dict]] = None,
-        manualRibbonSlots: Optional[dict[int, str]] = None,
-        manualSlotColors: Optional[dict[int, dict[str, str]]] = None,
-        awardSlots: Optional[list[str]] = None,
-        bonusSlots: Optional[list[str]] = None,
-        departmentBadge: Optional[str] = None,
-    ) -> tuple[Optional[Image.Image], Optional[dict[str, set[str]]], Optional[set[str]]]:
-        """Composite a 128×128 ribbon image.
-
-        `customOffsets` (name -> (dx, dy)) shifts individual ribbons from their
-        algorithmic position — used by the drag-to-place feature. If supplied,
-        `placements` is filled with `{name, category, x, y, w, h}` dicts so
-        callers can hit-test mouse clicks back to the assets that were drawn.
-        """
-        offsets = customOffsets or {}
-
-        def _record_paste(target_img, piece, xy, name, category):
-            dx, dy = offsets.get(name, (0, 0))
-            final = (xy[0] + dx, xy[1] + dy)
-            target_img.paste(piece, final, piece)
-            if placements is not None:
-                placements.append({
-                    "name": name,
-                    "category": category,
-                    "x": final[0],
-                    "y": final[1],
-                    "w": piece.size[0],
-                    "h": piece.size[1],
-                })
-
-        try:
-            if baseImage is None:
-                if requireNameForNew and nameplateText.strip() == "":
-                    raise ValueError("Nametape cannot be blank for a new image.")
-                baseImg = Image.new("RGBA", (imageSize, imageSize), (255, 255, 255, 0))
-            else:
-                baseImg = baseImage.copy().convert("RGBA")
-
-            usedSlots = self._newUsedSlots()
-
-            nameplateImg = None
-            nameplateWidth = defaultNameplateWidth
-            nameplatePath = os.path.join(charactersDir, "Nameplate.png")
-            if os.path.exists(nameplatePath):
-                with Image.open(nameplatePath) as img:
-                    nameplateImg = img.convert("RGBA")
-                    nameplateWidth = nameplateImg.size[0]
-
-            missingAssets: set[str] = set()
-
-            def safeLoad(item: AssetItem) -> Optional[Image.Image]:
-                try:
-                    return loadRibbonImage(item, factionKey=faction)
-                except Exception:
-                    missingAssets.add(item.name)
-                    return None
-
-            def selectedItems(category: str) -> list[AssetItem]:
-                return [item for item in self.groups[category] if item.name in selectedNames]
-
-            # Awards / Bonus medals (pocket layout). Explicit slot lists allow
-            # duplicates (e.g. triple Diamond Medal); otherwise fall back to the
-            # checkbox-derived selection which dedupes by name.
-            if awardSlots is not None or bonusSlots is not None:
-                medalByName = {it.name: it for it in self.groups["sacks"]}
-                awardMedals = [medalByName[n] for n in (awardSlots or []) if n and n in medalByName]
-                bonusMedals = [medalByName[n] for n in (bonusSlots or []) if n and n in medalByName]
-            else:
-                selectedMedals = selectedItems("sacks")
-                awardMedals = [item for item in selectedMedals if item.name in awardMedalNames]
-                bonusMedals = [item for item in selectedMedals if item.name in bonusMedalNames]
-
-            # Left-pocket priority: badge > overflow bonus medals > award medals.
-            # All three compete for the same left-pocket slots; the higher
-            # priority wins and silently overrides the lower.
-            useBadge = bool(departmentBadge) and departmentBadge != "NONE"
-            hasOverflowBonus = len(bonusMedals) > maxMedalsPerSide
-            if useBadge or hasOverflowBonus:
-                awardMedals = []
-
-            if len(awardMedals) > maxMedalsPerSide:
-                if errorCallback:
-                    errorCallback(f"Only {maxMedalsPerSide} award medals can be applied; extra selections are ignored.")
-                awardMedals = awardMedals[:maxMedalsPerSide]
-            # Bonus medals: first `maxMedalsPerSide` go in the pocket row, the next
-            # set stacks in a row above it. Cap total at 2× per side.
-            bonusCap = maxMedalsPerSide * 2
-            if len(bonusMedals) > bonusCap:
-                if errorCallback:
-                    errorCallback(f"Only {bonusCap} bonus medals can be applied; extra selections are ignored.")
-                bonusMedals = bonusMedals[:bonusCap]
-
-            if awardMedals or bonusMedals or useBadge:
-                nametapeCenterX = partCoords["nametape"][0] + (nameplateWidth // 2)
-                rightCenterX = nametapeCenterX + pocketRightOffset
-                yTop = partCoords["sacks"][1]
-
-                leftSlotX = nametapeCenterX + pocketXOffset
-                rightSlotX = rightCenterX + pocketXOffset
-
-                pocketCentersLeft = _buildPocketCenters(leftSlotX, len(awardMedals))
-                # Right pocket = first 3 bonus medals. Overflow 4–6 jumps to
-                # the left pocket (replacing award medals there).
-                pocketRowBonus = bonusMedals[:maxMedalsPerSide]
-                overflowBonus = bonusMedals[maxMedalsPerSide:]
-                pocketCentersRight = _buildPocketCenters(rightSlotX, len(pocketRowBonus))
-                overflowCentersLeft = _buildPocketCenters(leftSlotX, len(overflowBonus))
-
-                # When explicit slot lists are provided, allow duplicates (the
-                # user picked the same medal in multiple slots intentionally).
-                dedupe = awardSlots is None and bonusSlots is None
-                for item, cx in zip(awardMedals, pocketCentersLeft):
-                    piece = safeLoad(item)
-                    if piece is None:
-                        continue
-                    w, _ = piece.size
-                    if not dedupe or item.name not in usedSlots["sacks"]:
-                        _record_paste(baseImg, piece, (int(cx - w / 2), yTop), item.name, "sacks")
-                        usedSlots["sacks"].add(item.name)
-
-                for item, cx in zip(pocketRowBonus, pocketCentersRight):
-                    piece = safeLoad(item)
-                    if piece is None:
-                        continue
-                    w, _ = piece.size
-                    if not dedupe or item.name not in usedSlots["sacks"]:
-                        _record_paste(baseImg, piece, (int(cx - w / 2), yTop), item.name, "sacks")
-                        usedSlots["sacks"].add(item.name)
-
-                # Overflow bonus medals render at the LEFT pocket (same Y),
-                # replacing award medals. Skipped when badge mode is on.
-                if overflowBonus and not useBadge:
-                    for item, cx in zip(overflowBonus, overflowCentersLeft):
-                        piece = safeLoad(item)
-                        if piece is None:
-                            continue
-                        w, _ = piece.size
-                        if not dedupe or item.name not in usedSlots["sacks"]:
-                            _record_paste(baseImg, piece, (int(cx - w / 2), yTop), item.name, "sacks")
-                            usedSlots["sacks"].add(item.name)
-
-                # Department badge at left-pocket center (highest left priority).
-                if useBadge:
-                    badgeItem = next((it for it in self.groups.get("spbadge", []) if it.name == departmentBadge), None)
-                    if badgeItem is not None:
-                        piece = safeLoad(badgeItem)
-                        if piece is not None:
-                            w, _ = piece.size
-                            badgeCenters = _buildPocketCenters(leftSlotX, 1)
-                            cx = badgeCenters[0] if badgeCenters else leftSlotX
-                            _record_paste(baseImg, piece, (int(cx - w / 2), yTop), badgeItem.name, "sacks")
-
-            # Gorgets
-            for item in self.groups["gorget"]:
-                if item.name in selectedNames and item.name not in usedSlots["gorget"]:
-                    piece = safeLoad(item)
-                    if piece is not None:
-                        _record_paste(baseImg, piece, partCoords["gorget"], item.name, "gorget")
-                        usedSlots["gorget"].add(item.name)
-
-            # Special badges
-            for item in self.groups["spbadge"]:
-                if item.name in selectedNames and item.name not in usedSlots["spbadge"]:
-                    piece = safeLoad(item)
-                    if piece is not None:
-                        _record_paste(baseImg, piece, partCoords["spbadge"], item.name, "spbadge")
-                        usedSlots["spbadge"].add(item.name)
-
-            # Commendations
-            selectedComm = selectedItems("commendations")
-            yStart = partCoords["commendations"][1]
-            maxPerRow = 4
-            rowCount = 0
-            secondRow = False
-
-            while selectedComm:
-                rowCount += 1
-                if rowCount >= 2:
-                    secondRow = True
-
-                row = selectedComm[:maxPerRow]
-                selectedComm = selectedComm[maxPerRow:]
-
-                rowImages, totalWidth, rowHeight = _buildRowImages(row, safeLoad)
-                if not rowImages:
-                    continue
-
-                xCursor = _centeredRowStart(
-                    totalWidth=totalWidth,
-                    areaX=partCoords["commendations"][0],
-                    areaWidth=ribbonAreaWidth,
-                    itemCount=len(row),
-                )
-
-                for item, piece, w, _ in rowImages:
-                    if item.name not in usedSlots["commendations"]:
-                        _record_paste(baseImg, piece, (xCursor, yStart), item.name, "commendations")
-                        xCursor += w - 1
-                        usedSlots["commendations"].add(item.name)
-                yStart -= rowHeight - 1
-
-            # Corpus commendations
-            selectedCorpus = selectedItems("corpus")
-            if selectedCorpus:
-                yStart = partCoords["corpus"][1]
-                if not secondRow:
-                    yStart += 3
-
-                while selectedCorpus:
-                    row = selectedCorpus[:maxPerRow]
-                    selectedCorpus = selectedCorpus[maxPerRow:]
-
-                    rowImages, totalWidth, rowHeight = _buildRowImages(row, safeLoad)
-                    if not rowImages:
-                        continue
-
-                    xCursor = _centeredRowStart(
-                        totalWidth=totalWidth,
-                        areaX=partCoords["corpus"][0],
-                        areaWidth=ribbonAreaWidth,
-                        itemCount=len(row),
-                        offset=corpusXOffset,
-                    )
-
-                    for item, piece, w, _ in rowImages:
-                        if item.name not in usedSlots["corpus"]:
-                            _record_paste(baseImg, piece, (xCursor, yStart), item.name, "corpus")
-                            xCursor += w - 1
-                            usedSlots["corpus"].add(item.name)
-
-                    yStart -= rowHeight
-
-            # Ribbons — manual slot placement bypasses the auto-flow layout.
-            if manualRibbonSlots:
-                ribbonByName = {item.name: item for item in self.groups["ribbons"]}
-                slotPositions = _computeRibbonSlotGrid()
-                for slotIdx, ribbonName in manualRibbonSlots.items():
-                    if slotIdx < 0 or slotIdx >= len(slotPositions):
-                        continue
-                    item = ribbonByName.get(ribbonName)
-                    if item is None:
-                        continue
-                    slotOverride = (manualSlotColors or {}).get(slotIdx)
-                    if slotOverride:
-                        try:
-                            piece = renderRibbonWithColors(item, faction, slotOverride)
-                        except Exception:
-                            piece = safeLoad(item)
-                    else:
-                        piece = safeLoad(item)
-                    if piece is None:
-                        continue
-                    # Manual placement allows duplicates — the user explicitly
-                    # picked each slot, so we don't dedup by name here.
-                    _record_paste(baseImg, piece, slotPositions[slotIdx], ribbonName, "ribbons")
-                selectedRibbons = []
-            else:
-                selectedRibbons = selectedItems("ribbons")
-            yStart = partCoords["ribbons"][1]
-            rowNumber = 1
-
-            while selectedRibbons:
-                if rowNumber < ribbonRightStartRow:
-                    maxInRow = ribbonCenteredRowCapacity
-                    alignRight = False
-                elif rowNumber == ribbonRightStartRow:
-                    maxInRow = ribbonRightFirstRowCapacity
-                    alignRight = True
-                else:
-                    maxInRow = ribbonRightSubsequentRowCapacity
-                    alignRight = True
-
-                row = selectedRibbons[:maxInRow]
-                selectedRibbons = selectedRibbons[maxInRow:]
-
-                rowImages, totalWidth, rowHeight = _buildRowImages(row, safeLoad)
-                if not rowImages:
-                    rowNumber += 1
-                    continue
-
-                if alignRight:
-                    xCursor = _rightAlignedRowStart(
-                        totalWidth=totalWidth,
-                        itemCount=len(rowImages),
-                        areaX=partCoords["ribbons"][0],
-                        areaWidth=ribbonAreaWidth,
-                        offset=ribbonsRightAlignOffset,
-                    )
-                else:
-                    widthWithSpacing = totalWidth - max(len(rowImages) - 1, 0)
-                    xCursor = partCoords["ribbons"][0] + (
-                        (ribbonAreaWidth - widthWithSpacing) // 2
-                    ) + ribbonsRightAlignOffset
-
-                for item, piece, w, _ in rowImages:
-                    if item.name not in usedSlots["ribbons"]:
-                        _record_paste(baseImg, piece, (xCursor, yStart), item.name, "ribbons")
-                        xCursor += w - 1
-                        usedSlots["ribbons"].add(item.name)
-
-                yStart -= rowHeight - 1
-                rowNumber += 1
-
-            # Nametape
-            if nameplateText.strip():
-                npX, npY = partCoords["nametape"]
-                if nameplateImg is None:
-                    if not os.path.exists(nameplatePath):
-                        raise FileNotFoundError(f"Missing nameplate image: {nameplatePath}")
-                    with Image.open(nameplatePath) as img:
-                        nameplateImg = img.convert("RGBA")
-
-                baseImg.paste(nameplateImg, (npX, npY), nameplateImg)
-
-                letters: list[tuple[Optional[Image.Image], int]] = []
-                totalWidth = 0
-                for ch in nameplateText.upper():
-                    try:
-                        letterImg = loadCharacterImage(ch)
-                    except FileNotFoundError:
-                        if ch == " ":
-                            letters.append((None, 2))
-                            totalWidth += 2
-                        continue
-                    w, _ = letterImg.size
-                    letters.append((letterImg, w))
-                    totalWidth += w
-
-                if letters:
-                    totalWidth += nameplateLetterSpacing * (len(letters) - 1)
-                    startX = npX + (nameplateImg.size[0] - totalWidth) // 2
-                    for index, (letterImg, width) in enumerate(letters):
-                        if letterImg is not None:
-                            baseImg.paste(letterImg, (startX, npY + 1), letterImg)
-                        startX += width
-                        if index < len(letters) - 1:
-                            startX += nameplateLetterSpacing
-
-            if missingAssets and errorCallback:
-                missingList = ", ".join(sorted(missingAssets))
-                errorCallback(f"Missing assets: {missingList}")
-
-            return baseImg, usedSlots, missingAssets
-
-        except Exception as exc:
-            if errorCallback:
-                errorCallback(str(exc))
-            return None, None, None
+    Threads the active LayoutProfile (currentLayout, kept in lock-step with the
+    profile by applyProfile) plus the asset-loading callables into renderer.py,
+    which itself imports only PIL + profiles. Call sites recreate the renderer
+    after every applyProfile (faction/profile switch), so currentLayout is fresh.
+    """
+    return RibbonRenderer(
+        groups,
+        currentLayout,
+        load_ribbon_image=loadRibbonImage,
+        render_ribbon_with_colors=renderRibbonWithColors,
+        load_character_image=loadCharacterImage,
+        characters_dir=charactersDir,
+        award_medal_names=awardMedalNames,
+        bonus_medal_names=bonusMedalNames,
+    )
 
 
 class RibbonEngineApp:
@@ -1771,7 +1362,7 @@ class RibbonEngineApp:
             messagebox.showerror("Error", str(exc))
             self.ribbonGroups = {key: [] for key in categoryLabels}
 
-        self.renderer = RibbonRenderer(self.ribbonGroups)
+        self.renderer = makeRenderer(self.ribbonGroups)
 
         # Catch faction JSONs that reference PNGs which aren't on disk. This is
         # the most common distribution-time mistake — surface it loud, on launch,
@@ -2165,7 +1756,7 @@ class RibbonEngineApp:
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
             self.ribbonGroups = {key: [] for key in categoryLabels}
-        self.renderer = RibbonRenderer(self.ribbonGroups)
+        self.renderer = makeRenderer(self.ribbonGroups)
 
         self._rebuildSections(selectedBefore)
         self.refreshProfileChoices()
@@ -2230,7 +1821,7 @@ class RibbonEngineApp:
         except Exception as exc:
             messagebox.showerror("Reload failed", str(exc))
             self.ribbonGroups = {key: [] for key in categoryLabels}
-        self.renderer = RibbonRenderer(self.ribbonGroups)
+        self.renderer = makeRenderer(self.ribbonGroups)
         self._rebuildSections(selectedBefore)
         self._refreshManualRibbonChoices()
         self._refreshOverlayTemplateChoices()
@@ -2407,7 +1998,7 @@ class RibbonEngineApp:
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
             self.ribbonGroups = {key: [] for key in categoryLabels}
-        self.renderer = RibbonRenderer(self.ribbonGroups)
+        self.renderer = makeRenderer(self.ribbonGroups)
         self._rebuildSections(selectedBefore)
         self.applyFilter()
         self._refreshManualRibbonChoices()
