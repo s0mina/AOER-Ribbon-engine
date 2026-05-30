@@ -1,0 +1,5 @@
+﻿# Keep this faction folder tracked in git so the asset-tree structure
+# (the filesystem allowlist) exists, but never commit the ribbon art itself.
+# Ribbon/award/commendation PNGs are shipped out-of-band, not via the repo.
+*
+!.gitignore

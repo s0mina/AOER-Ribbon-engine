@@ -56,7 +56,13 @@ bonusMedalNames = {
 
 # -------------------------------
 # Paths and manifests
-baseDir = os.path.dirname(os.path.abspath(__file__))
+# When frozen by PyInstaller, __file__ points inside the temporary unpack dir,
+# which is wrong for reading the asset tree and writing output. Use the folder
+# the .exe actually lives in so the data folders sit right next to it.
+if getattr(sys, "frozen", False):
+    baseDir = os.path.dirname(sys.executable)
+else:
+    baseDir = os.path.dirname(os.path.abspath(__file__))
 # Per-faction asset tree: assets/<FACTION_KEY>/{ribbons,awards,commendations}/*.png.
 # The filesystem IS the allowlist — a faction can only render PNGs physically
 # present under its directory. This is out-of-band protection: a recipient who

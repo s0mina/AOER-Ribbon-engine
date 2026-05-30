@@ -1,0 +1,76 @@
+name: Build Windows EXE
+
+# When this runs:
+#  - Every push to main / master  -> builds the exe and uploads it as a
+#    downloadable "artifact" on the Actions run (good for testing).
+#  - Every pushed tag like v1.0    -> ALSO publishes a GitHub Release with the
+#    zip attached, so end users get a clean download page.
+#  - The "Run workflow" button on the Actions tab (manual trigger).
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build the .exe
+        # --onedir  : produce a folder with the exe + its runtime (fast start,
+        #             plays nicely with antivirus, easy to ship data alongside).
+        # --windowed: no console window pops up behind the GUI.
+        # --name    : the name of the exe / folder.
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --name "AOER-Ribbon-engine" ribbonengine.py
+
+      - name: Copy data folders next to the exe
+        # The engine reads its assets AND writes its output in folders next to
+        # the exe (assets, factions, Characters, templates, etc.). Ship them
+        # alongside so users can edit factions/loadouts and find their output.
+        shell: pwsh
+        run: |
+          $dest = "dist/AOER-Ribbon-engine"
+          $folders = @("assets", "factions", "Characters", "templates",
+                       "Engine Profiles", "loadouts", "out", "ribbonoutput")
+          foreach ($f in $folders) {
+            if (Test-Path $f) {
+              Copy-Item -Recurse -Force $f "$dest/$f"
+            }
+          }
+          foreach ($file in @("settings.json", "README.md", "FACTIONS.md", "CLI.md", "INSTALLATION.md")) {
+            if (Test-Path $file) { Copy-Item -Force $file "$dest/$file" }
+          }
+
+      - name: Zip it up
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/AOER-Ribbon-engine/*" `
+            -DestinationPath "AOER-Ribbon-engine-windows.zip" -Force
+
+      - name: Upload as a build artifact (download from the Actions run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AOER-Ribbon-engine-windows
+          path: AOER-Ribbon-engine-windows.zip
+
+      - name: Publish a Release (only when you push a version tag like v1.0)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: AOER-Ribbon-engine-windows.zip

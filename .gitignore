@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+*.zip
+
+# Local user output (don't ship a user's renders to the repo)
+out/*
+!out/.gitkeep
+ribbonoutput/*
+!ribbonoutput/.gitkeep
+
+# Runtime-generated local config (created on first run, per-user)
+settings.json
+Engine Profiles/*
+!Engine Profiles/.gitkeep
