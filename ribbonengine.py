@@ -5,10 +5,15 @@ import hashlib
 import json
 import os
 import sys
+import shutil
+import subprocess
+import tempfile
 import tkinter as tk
+import urllib.request
+import zipfile
 from copy import deepcopy
 from dataclasses import dataclass
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 from typing import Callable, Optional
 
 from PIL import Image, ImageGrab, ImageTk, PngImagePlugin
@@ -35,6 +40,17 @@ collapsedIcon = "\u25b8"
 # -------------------------------
 # Layout values are profile-driven; these are safe bootstrap defaults until a profile is loaded.
 partCoordsKeys = ("corpus", "nametape", "sacks", "commendations", "ribbons", "gorget", "spbadge")
+# Canonical defaults for the stock 128x128 layout. Used by the Profile Editor's
+# "Reset to defaults" button and by the `New…` profile template.
+DEFAULT_PART_COORDS: dict[str, tuple[int, int]] = {
+    "corpus": (8, 16),
+    "nametape": (13, 31),
+    "sacks": (14, 62),
+    "commendations": (8, 25),
+    "ribbons": (80, 33),
+    "gorget": (43, 0),
+    "spbadge": (90, 59),
+}
 partCoords = {key: (0, 0) for key in partCoordsKeys}
 pocketColSpacing = 0
 pocketRightOffset = 0
@@ -134,6 +150,66 @@ loadoutsDir = os.path.join(baseDir, "loadouts")
 # custom_offsets}. v2 adds awards/bonuses/department_badge/manual_slots and
 # the profile key.
 METADATA_SCHEMA_VERSION = 2
+
+
+class _Tooltip:
+    """Tiny hover-tooltip helper.
+
+    Attach to any Tk widget with `_Tooltip(widget, lambda: "text")`. The
+    callback is re-evaluated each time the tooltip shows, so dynamic state
+    (e.g. the current effective color) stays fresh.
+    """
+
+    def __init__(self, widget, text_provider, delay_ms: int = 400):
+        self.widget = widget
+        self.provide = text_provider if callable(text_provider) else (lambda t=text_provider: t)
+        self.delay_ms = delay_ms
+        self._after_id = None
+        self._tip = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self._after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _cancel(self):
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self):
+        text = ""
+        try:
+            text = str(self.provide() or "")
+        except Exception:
+            return
+        if not text:
+            return
+        x = self.widget.winfo_rootx() + 16
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            self._tip, text=text, justify="left",
+            background="#2a2a2a", foreground="#eaeaea",
+            relief="solid", borderwidth=1, padx=6, pady=3,
+            font=("TkDefaultFont", 8),
+        ).pack()
+
+    def _hide(self, _event=None):
+        self._cancel()
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
 
 
 def _atomicWriteBytes(path: str, data: bytes) -> None:
@@ -266,7 +342,7 @@ defaultProfile = {
     "default_nameplate_width": defaultNameplateWidth,
     "nameplate_letter_spacing": nameplateLetterSpacing,
     "hover_preview_size": hoverPreviewSize,
-    "part_coords": {key: [0, 0] for key in partCoordsKeys},
+    "part_coords": {key: list(DEFAULT_PART_COORDS[key]) for key in partCoordsKeys},
     "offsets": {
         "pocket_col_spacing": pocketColSpacing,
         "pocket_right_offset": pocketRightOffset,
@@ -434,15 +510,35 @@ def loadRibbonGroups() -> dict[str, list[AssetItem]]:
     contributingKeys = _contributingFactionKeys(registry, _activeFactionKey)
 
     def collect(sub: str) -> list[AssetItem]:
-        out: list[AssetItem] = []
-        seen: set[str] = set()
-        for key in contributingKeys:
-            for item in listPngs(_factionAssetDir(key, sub)):
-                if item.name in seen:
+        """Return assets ordered as: hidden (AOER, global) A→Z, then active A→Z.
+
+        Local-override semantics still hold — if the active faction ships a
+        same-named file, the active one wins and shows up in the *active*
+        group, not the hidden group. `listPngs` already sorts each source
+        A→Z, so we just stitch the buckets together in the desired order.
+        """
+        active_items: list[AssetItem] = []
+        active_names: set[str] = set()
+        if contributingKeys:
+            for item in listPngs(_factionAssetDir(contributingKeys[0], sub)):
+                if item.name in active_names:
                     continue
-                seen.add(item.name)
-                out.append(item)
-        return out
+                active_names.add(item.name)
+                active_items.append(item)
+
+        hidden_items: list[AssetItem] = []
+        hidden_names: set[str] = set()
+        for key in contributingKeys[1:]:
+            for item in listPngs(_factionAssetDir(key, sub)):
+                if item.name in active_names or item.name in hidden_names:
+                    continue
+                hidden_names.add(item.name)
+                hidden_items.append(item)
+        # Each bucket is already A→Z from `listPngs`; sort again defensively
+        # in case multiple hidden factions contribute (concat would interleave).
+        hidden_items.sort(key=lambda it: it.name.lower())
+        active_items.sort(key=lambda it: it.name.lower())
+        return hidden_items + active_items
 
     groups: dict[str, list[AssetItem]] = {
         "sacks": collect("awards"),
@@ -551,21 +647,18 @@ def loadRibbonImage(item: AssetItem, factionKey: Optional[str] = None) -> Image.
     if not isRibbon:
         return source
 
-    options = getRecolorOptions()
-    if options.is_passthrough:
-        return source
-
     # Honor per-faction `no_recolor` opt-outs — bespoke art that should never
     # be tinted regardless of the active palette.
     if registry.is_no_recolor(item.name):
         return source
 
-    # Per-ribbon sidecar overrides (foo.png ↔ foo.png.meta.json). Lets a
-    # designer ship a single bespoke ribbon (heritage award, etc.) that opts
-    # out of recolor without editing the faction JSON.
+    # Read the per-ribbon sidecar BEFORE consulting the global options, so a
+    # sidecar with custom colors / toggles can re-enable recolor even when
+    # the user has every region turned off in Settings.
     sidecar = _readRibbonSidecar(item.path)
     if sidecar.get("no_recolor") is True:
         return source
+    options = getRecolorOptions()
     sidecarRecolor = sidecar.get("recolor")
     if isinstance(sidecarRecolor, dict):
         from factions import RecolorOptions
@@ -574,10 +667,9 @@ def loadRibbonImage(item: AssetItem, factionKey: Optional[str] = None) -> Image.
             stripe=bool(sidecarRecolor.get("stripe", options.stripe)),
             base=bool(sidecarRecolor.get("base", options.base)),
         )
-        if options.is_passthrough:
-            return source
-
     sidecarColors = sidecar.get("colors") if isinstance(sidecar.get("colors"), dict) else None
+    if options.is_passthrough and not sidecarColors:
+        return source
 
     # Pick which palette to apply:
     #   - corp-wide / shared assets use the owning hidden faction's palette
@@ -647,6 +739,34 @@ def _renderWithCustomColors(asset_path, paletteKey, source, options, sidecarColo
     rendered = recolor_ribbon(source, customFaction, options, registry.border_thickness)
     _customRecolorCache[key] = rendered
     return rendered.copy()
+
+
+def renderRibbonWithColors(item, factionKey: Optional[str], colors: dict) -> Image.Image:
+    """Render a single ribbon with explicit per-call color overrides.
+
+    Used for per-slot recoloring in the manual placement grid (where two
+    instances of the same ribbon can show in different palettes). Bypasses
+    the sidecar entirely and forces every region with a supplied color on.
+    """
+    from factions import RecolorOptions
+    if not os.path.exists(item.path):
+        raise FileNotFoundError(item.path)
+    with Image.open(item.path) as img:
+        source = img.convert("RGBA")
+    registry = getFactionRegistry()
+    paletteKey = factionKey or _activeFactionKey
+    if registry.is_shared_asset(item.name):
+        owner = registry.hidden_faction_for(item.name)
+        if owner is not None:
+            paletteKey = owner.key
+    options = RecolorOptions(
+        border=bool(colors.get("border")),
+        stripe=bool(colors.get("stripe")),
+        base=bool(colors.get("base")),
+    )
+    if options.is_passthrough:
+        return source.copy()
+    return _renderWithCustomColors(item.path, paletteKey, source, options, colors, registry)
 
 
 def invalidateRibbonCache(asset_path: str) -> None:
@@ -1190,6 +1310,7 @@ class RibbonRenderer:
         customOffsets: Optional[dict[str, tuple[int, int]]] = None,
         placements: Optional[list[dict]] = None,
         manualRibbonSlots: Optional[dict[int, str]] = None,
+        manualSlotColors: Optional[dict[int, dict[str, str]]] = None,
         awardSlots: Optional[list[str]] = None,
         bonusSlots: Optional[list[str]] = None,
         departmentBadge: Optional[str] = None,
@@ -1429,7 +1550,14 @@ class RibbonRenderer:
                     item = ribbonByName.get(ribbonName)
                     if item is None:
                         continue
-                    piece = safeLoad(item)
+                    slotOverride = (manualSlotColors or {}).get(slotIdx)
+                    if slotOverride:
+                        try:
+                            piece = renderRibbonWithColors(item, faction, slotOverride)
+                        except Exception:
+                            piece = safeLoad(item)
+                    else:
+                        piece = safeLoad(item)
                     if piece is None:
                         continue
                     # Manual placement allows duplicates — the user explicitly
@@ -1581,9 +1709,23 @@ class RibbonEngineApp:
         # the renderer instead.
         self.manualRibbonMode: bool = bool(self.settingsData.get("manual_ribbon_mode", False))
         self.manualRibbonSlots: dict[int, str] = {}
+        self._dragData: Optional[dict] = None
+        self._dragHoverSlot: Optional[int] = None
         for k, v in (self.settingsData.get("manual_ribbon_slots") or {}).items():
             try:
                 self.manualRibbonSlots[int(k)] = str(v)
+            except (TypeError, ValueError):
+                continue
+        # Per-slot color overrides (slot_idx -> {"border": "#...", "stripe": "#...", "base": "#..."}).
+        # Keyed by slot so duplicate placements of the same ribbon can be tinted independently.
+        self.manualSlotColors: dict[int, dict[str, str]] = {}
+        for k, v in (self.settingsData.get("manual_slot_colors") or {}).items():
+            if not isinstance(v, dict):
+                continue
+            try:
+                cleaned = {region: str(v[region]) for region in ("border", "stripe", "base") if isinstance(v.get(region), str)}
+                if cleaned:
+                    self.manualSlotColors[int(k)] = cleaned
             except (TypeError, ValueError):
                 continue
         self._pendingPlaceRibbon: Optional[str] = None
@@ -1914,6 +2056,7 @@ class RibbonEngineApp:
         self.root.bind_all("<Control-Shift-Z>", self.redo)
         self.root.bind_all("<Control-s>", lambda _e: (self.generateImage(), "break")[1])
         self.root.bind_all("<Control-e>", lambda _e: (self._exportLoadoutImage(), "break")[1])
+        self.root.bind_all("<Control-Shift-C>", lambda _e: (self.copyImageToClipboard(), "break")[1])
         self.root.bind_all("<Control-d>", lambda _e: (self._openDiffDialog(), "break")[1])
         self.root.bind_all("<Control-Escape>", lambda _e: (self.clearAll(), "break")[1])
 
@@ -2045,6 +2188,7 @@ class RibbonEngineApp:
         stale = [k for k in self.manualRibbonSlots if k not in valid]
         for k in stale:
             self.manualRibbonSlots.pop(k, None)
+            self.manualSlotColors.pop(k, None)
         if self._manualSelectedSlot not in valid:
             self._manualSelectedSlot = None
         self.manualGridCanvas.config(width=gw, height=gh)
@@ -2286,9 +2430,9 @@ class RibbonEngineApp:
                 certItems = [item for item in remainingItems if certificationKeyword in item.name.lower()]
                 otherItems = [item for item in remainingItems if certificationKeyword not in item.name.lower()]
 
-                self._addSection(self.leftColumn, certificationsSectionLabel, certItems)
-                self._addSection(self.leftColumn, categoryLabels.get(category, category), otherItems)
-                self._addSection(self.leftColumn, anrocomSectionLabel, anrocomItems)
+                self._addSection(self.leftColumn, certificationsSectionLabel, certItems, draggable=True)
+                self._addSection(self.leftColumn, categoryLabels.get(category, category), otherItems, draggable=True)
+                self._addSection(self.leftColumn, anrocomSectionLabel, anrocomItems, draggable=True)
                 continue
 
             if category in ("gorget", "spbadge"):
@@ -2298,7 +2442,7 @@ class RibbonEngineApp:
             else:
                 self._addSection(self.rightColumn, categoryLabels.get(category, category), items)
 
-    def _addSection(self, parent, labelText: str, items: list[AssetItem]) -> None:
+    def _addSection(self, parent, labelText: str, items: list[AssetItem], draggable: bool = False) -> None:
         if not items:
             return
 
@@ -2328,6 +2472,10 @@ class RibbonEngineApp:
             sectionItems.append({"name": item.name, "widget": widget, "path": item.path})
             widget.bind("<Enter>", lambda _event, it=item: self.setHoverPreview(it))
             widget.bind("<Leave>", lambda _event: self.clearHoverPreview())
+            if draggable:
+                widget.bind("<ButtonPress-1>", lambda e, n=item.name: self._onSidebarDragStart(e, n), add="+")
+                widget.bind("<B1-Motion>", self._onSidebarDragMotion, add="+")
+                widget.bind("<ButtonRelease-1>", self._onSidebarDragEnd, add="+")
 
         section = SectionUI(
             key=labelText,
@@ -2764,6 +2912,7 @@ class RibbonEngineApp:
         settings["recolor_base"] = bool(opts.base)
         settings["manual_ribbon_mode"] = bool(self.manualRibbonMode)
         settings["manual_ribbon_slots"] = {str(k): v for k, v in self.manualRibbonSlots.items()}
+        settings["manual_slot_colors"] = {str(k): dict(v) for k, v in self.manualSlotColors.items()}
         if hasattr(self, "useDepartmentBadgeVar"):
             settings["use_department_badge"] = bool(self.useDepartmentBadgeVar.get())
         if hasattr(self, "departmentBadgeVar"):
@@ -2923,6 +3072,7 @@ class RibbonEngineApp:
         fileMenu = tk.Menu(menubar, tearoff=False)
         fileMenu.add_command(label="Generate Image\tCtrl+S", command=self.generateImage)
         fileMenu.add_command(label="Export Loadout\tCtrl+E", command=self._exportLoadoutImage)
+        fileMenu.add_command(label="Copy to Clipboard\tCtrl+Shift+C", command=self.copyImageToClipboard)
         fileMenu.add_command(label="Diff…\tCtrl+D", command=self._openDiffDialog)
         fileMenu.add_command(label="Reload Assets", command=self.reloadAssets)
         fileMenu.add_separator()
@@ -2935,13 +3085,213 @@ class RibbonEngineApp:
 
         toolsMenu = tk.Menu(menubar, tearoff=False)
         toolsMenu.add_command(label="Loadouts…", command=self._openLoadoutDialog)
+        toolsMenu.add_command(label="Import from URL…", command=self._openImportUrlDialog)
+        toolsMenu.add_separator()
+        toolsMenu.add_command(label="Export Faction Pack…", command=self._exportFactionPack)
+        toolsMenu.add_command(label="Import Faction Pack…", command=self._importFactionPack)
         toolsMenu.add_command(label="Profile Editor…", command=self._openProfileEditorDialog)
         toolsMenu.add_command(label="Move/Rename Ribbon…", command=self._openMoveRibbonDialog)
+        toolsMenu.add_command(label="Ribbon Editor…", command=self._openRibbonEditorDialog)
         toolsMenu.add_command(label="Settings…", command=self._openSettingsDialog)
         menubar.add_cascade(label="Tools", menu=toolsMenu)
 
+        helpMenu = tk.Menu(menubar, tearoff=False)
+        md_files = sorted(
+            f for f in os.listdir(baseDir)
+            if f.lower().endswith(".md") and os.path.isfile(os.path.join(baseDir, f))
+        )
+        if md_files:
+            for fname in md_files:
+                helpMenu.add_command(
+                    label=fname,
+                    command=lambda f=fname: self._openMarkdownViewer(os.path.join(baseDir, f)),
+                )
+        else:
+            helpMenu.add_command(label="(no .md files found)", state="disabled")
+        menubar.add_cascade(label="Help", menu=helpMenu)
+
         self.root.config(menu=menubar)
         self._rebuildRecentMenu()
+
+    def _openMarkdownViewer(self, path: str) -> None:
+        """Open a markdown file in a read-only Toplevel with light formatting.
+
+        No external dependencies — we lex the file ourselves and apply
+        Tk Text tags for headings, bold/italic inline runs, code blocks,
+        list bullets, and blockquotes. Hyperlinks are intentionally
+        left as plain text (the user said they aren't needed).
+        """
+        try:
+            with open(path, "r", encoding="utf-8-sig") as fh:
+                raw = fh.read()
+        except Exception as exc:
+            messagebox.showerror("Help", f"Couldn't open {os.path.basename(path)}: {exc}")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Help — {os.path.basename(path)}")
+        win.configure(background=self.theme["bg"])
+        win.geometry("780x640")
+
+        outer = ttk.Frame(win, padding=8)
+        outer.pack(fill="both", expand=True)
+
+        bg = self.theme.get("panel_bg", "#1f1f1f")
+        fg = self.theme.get("fg", "#e6e6e6")
+        accent = self.theme.get("accent", "#ffcc00")
+        muted = self.theme.get("status", "#888")
+
+        text = tk.Text(
+            outer,
+            wrap="word",
+            background=bg,
+            foreground=fg,
+            insertbackground=fg,
+            relief="flat",
+            padx=14,
+            pady=10,
+            font=("Helvetica", 11),
+            spacing1=2,
+            spacing3=4,
+        )
+        vsb = ttk.Scrollbar(outer, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=vsb.set)
+        text.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        # Style tags.
+        text.tag_configure("h1", font=("Helvetica", 20, "bold"), foreground=accent, spacing1=10, spacing3=6)
+        text.tag_configure("h2", font=("Helvetica", 16, "bold"), foreground=accent, spacing1=8, spacing3=4)
+        text.tag_configure("h3", font=("Helvetica", 13, "bold"), foreground=fg, spacing1=6, spacing3=3)
+        text.tag_configure("h4", font=("Helvetica", 12, "bold"), foreground=fg, spacing1=4, spacing3=2)
+        text.tag_configure("bold", font=("Helvetica", 11, "bold"))
+        text.tag_configure("italic", font=("Helvetica", 11, "italic"))
+        text.tag_configure("code", font=("Courier", 10), background="#2a2a2a", foreground="#f0c674")
+        text.tag_configure(
+            "codeblock", font=("Courier", 10), background="#161616",
+            foreground="#f0c674", lmargin1=20, lmargin2=20, spacing1=4, spacing3=4,
+        )
+        text.tag_configure("bullet", lmargin1=18, lmargin2=36)
+        text.tag_configure("numbered", lmargin1=18, lmargin2=36)
+        text.tag_configure("quote", lmargin1=20, lmargin2=20, foreground=muted, font=("Helvetica", 11, "italic"))
+        text.tag_configure("hr", foreground=muted)
+
+        lines = raw.splitlines()
+        in_code = False
+        for line in lines:
+            stripped = line.rstrip()
+
+            # Fenced code block.
+            if stripped.startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code:
+                text.insert("end", line + "\n", ("codeblock",))
+                continue
+
+            # Horizontal rule.
+            if stripped in ("---", "***", "___"):
+                text.insert("end", "─" * 60 + "\n", ("hr",))
+                continue
+
+            # Headings.
+            m_heading = 0
+            while m_heading < 6 and m_heading < len(stripped) and stripped[m_heading] == "#":
+                m_heading += 1
+            if m_heading and m_heading <= 6 and (len(stripped) == m_heading or stripped[m_heading] == " "):
+                level = min(m_heading, 4)
+                content = stripped[m_heading:].strip()
+                self._insertMarkdownInline(text, content, base_tag=f"h{level}")
+                text.insert("end", "\n", (f"h{level}",))
+                continue
+
+            # Blockquote.
+            if stripped.startswith("> "):
+                self._insertMarkdownInline(text, stripped[2:], base_tag="quote")
+                text.insert("end", "\n", ("quote",))
+                continue
+
+            # Unordered list.
+            ls = line.lstrip(" \t")
+            if ls.startswith(("- ", "* ", "+ ")):
+                indent = len(line) - len(ls)
+                prefix = ("    " * (indent // 2)) + "• "
+                text.insert("end", prefix, ("bullet",))
+                self._insertMarkdownInline(text, ls[2:], base_tag="bullet")
+                text.insert("end", "\n", ("bullet",))
+                continue
+
+            # Ordered list (1. / 2. / …).
+            n = 0
+            while n < len(ls) and ls[n].isdigit():
+                n += 1
+            if n > 0 and n < len(ls) and ls[n] == "." and (n + 1 == len(ls) or ls[n + 1] == " "):
+                indent = len(line) - len(ls)
+                prefix = ("    " * (indent // 2)) + ls[: n + 1] + " "
+                text.insert("end", prefix, ("numbered",))
+                self._insertMarkdownInline(text, ls[n + 2:] if len(ls) > n + 1 else "", base_tag="numbered")
+                text.insert("end", "\n", ("numbered",))
+                continue
+
+            # Blank line.
+            if not stripped:
+                text.insert("end", "\n")
+                continue
+
+            # Paragraph.
+            self._insertMarkdownInline(text, stripped)
+            text.insert("end", "\n")
+
+        text.configure(state="disabled")
+        text.bind("<Control-c>", lambda _e: None)  # allow copy via default binding
+        win.transient(self.root)
+        win.focus_set()
+
+    def _insertMarkdownInline(self, text: tk.Text, line: str, base_tag: Optional[str] = None) -> None:
+        """Insert a single line with inline `code`, **bold**, *italic* runs.
+
+        Hyperlinks (`[text](url)`) are rendered as plain "text (url)"
+        — no clickable behavior, matching the user's spec.
+        """
+        i = 0
+        n = len(line)
+        # First, flatten [text](url) → "text (url)" so the inline pass
+        # can ignore link syntax.
+        import re
+        line = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", line)
+        n = len(line)
+
+        def tags_with(extra: str) -> tuple:
+            return (base_tag, extra) if base_tag else (extra,)
+
+        plain_tag: tuple = (base_tag,) if base_tag else ()
+
+        while i < n:
+            ch = line[i]
+            # Inline code.
+            if ch == "`":
+                end = line.find("`", i + 1)
+                if end != -1:
+                    text.insert("end", line[i + 1:end], tags_with("code"))
+                    i = end + 1
+                    continue
+            # Bold (**…**).
+            if ch == "*" and i + 1 < n and line[i + 1] == "*":
+                end = line.find("**", i + 2)
+                if end != -1:
+                    text.insert("end", line[i + 2:end], tags_with("bold"))
+                    i = end + 2
+                    continue
+            # Italic (*…*) — but not **.
+            if ch == "*":
+                end = line.find("*", i + 1)
+                if end != -1 and end > i + 1:
+                    text.insert("end", line[i + 1:end], tags_with("italic"))
+                    i = end + 1
+                    continue
+            # Plain character.
+            text.insert("end", ch, plain_tag)
+            i += 1
 
     def _rebuildRecentMenu(self) -> None:
         if not hasattr(self, "recentMenu"):
@@ -3014,6 +3364,7 @@ class RibbonEngineApp:
             "bonuses": bonuses,
             "department_badge": badge,
             "manual_slots": {str(k): v for k, v in self.manualRibbonSlots.items()},
+            "manual_slot_colors": {str(k): dict(v) for k, v in self.manualSlotColors.items()},
         }
 
     def applyMetadata(self, metadata: dict) -> bool:
@@ -3090,8 +3441,21 @@ class RibbonEngineApp:
                     self.manualRibbonSlots[int(k)] = str(v)
                 except (TypeError, ValueError):
                     continue
+            self.manualSlotColors = {}
+            slotColors = metadata.get("manual_slot_colors")
+            if isinstance(slotColors, dict):
+                for k, v in slotColors.items():
+                    if not isinstance(v, dict):
+                        continue
+                    try:
+                        cleaned = {region: str(v[region]) for region in ("border", "stripe", "base") if isinstance(v.get(region), str)}
+                        if cleaned:
+                            self.manualSlotColors[int(k)] = cleaned
+                    except (TypeError, ValueError):
+                        continue
             if hasattr(self, "manualGridCanvas"):
                 self._manualSelectedSlot = None
+                self._manualThumbCache.clear()
                 self._redrawManualGrid()
 
         if self.showSelectedVar.get():
@@ -3215,6 +3579,7 @@ class RibbonEngineApp:
             customOffsets=self.customOffsets,
             placements=placements,
             manualRibbonSlots=dict(self.manualRibbonSlots) if self.manualRibbonSlots else None,
+            manualSlotColors=dict(self.manualSlotColors) if self.manualSlotColors else None,
             awardSlots=[v.get() for v in getattr(self, "medalAwardVars", [])] or None,
             bonusSlots=[v.get() for v in getattr(self, "medalBonusVars", [])] or None,
             departmentBadge=(
@@ -3352,6 +3717,146 @@ class RibbonEngineApp:
         self._toast(f"Saved {os.path.basename(savePath)}")
         self._rememberRecentFile(savePath)
 
+    def copyImageToClipboard(self) -> None:
+        """Render the full-size composite and copy it to the system clipboard.
+
+        Uses the *exported* size — i.e. the same image `generateImage`
+        would write — not the on-screen scaled preview. The would-be
+        filename is logged to stdout/the status bar so the user has a
+        record of what they copied (handy when shipping screenshots in
+        a thread where filenames otherwise vanish).
+
+        Best-effort cross-platform copy:
+          - Windows: PIL BMP-to-DIB via Tk (no extra deps).
+          - macOS:   osascript reading the PNG file.
+          - Linux:   wl-copy (Wayland) or xclip (X11), whichever is on PATH.
+        Falls back to copying just the file path if no image-clipboard
+        path works, so the user can paste it in a file picker as a
+        consolation prize.
+        """
+        if not os.path.isdir(assetsRoot) or not os.path.isdir(charactersDir):
+            messagebox.showerror("Copy to clipboard", "Missing assets/ or Characters/ folder.")
+            return
+
+        def showError(message: str) -> None:
+            messagebox.showerror("Copy to clipboard", message)
+
+        image, _, _ = self.buildImage(requireNameForNew=False, errorCallback=showError)
+        if image is None:
+            return
+
+        filename = _defaultOutputFilename(self.entry.get())
+        size_str = f"{image.width}x{image.height}"
+        log_line = f"[clipboard] {filename} ({size_str})"
+        print(log_line)
+        self.setStatus(log_line)
+
+        # Write to a temp PNG (some clipboard mechanisms need a path).
+        fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="re3_clip_")
+        os.close(fd)
+        try:
+            image.save(tmp_path, format="PNG")
+            copied = self._copyImageFileToClipboard(tmp_path, image)
+        except Exception as exc:
+            messagebox.showerror("Copy to clipboard", f"Render failed: {exc}")
+            return
+        finally:
+            # Some clipboard backends read lazily; keep the file around
+            # for a few seconds before deleting. Easiest portable trick:
+            # schedule deletion on the Tk main loop.
+            self.root.after(5000, lambda p=tmp_path: self._safeUnlink(p))
+
+        if copied:
+            self._toast(f"Copied image to clipboard ({size_str}) — {filename}")
+        else:
+            # Fall back to copying the filename as text so the user gets
+            # *something* on the clipboard.
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(tmp_path)
+                self.root.update()
+                self._toast(f"Couldn't put image on clipboard; copied path instead ({filename})")
+            except tk.TclError:
+                self._toast("Couldn't copy to clipboard.")
+
+    def _safeUnlink(self, path: str) -> None:
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+        except OSError:
+            pass
+
+    def _copyImageFileToClipboard(self, path: str, image: Image.Image) -> bool:
+        """Platform-specific image-to-clipboard. Returns True on success."""
+        platform = sys.platform
+        try:
+            if platform.startswith("win"):
+                # Windows clipboard via win32clipboard if available; else
+                # PowerShell as a fallback (ships with every modern Windows).
+                try:
+                    import win32clipboard  # type: ignore
+                    import io as _io
+                    output = _io.BytesIO()
+                    image.convert("RGB").save(output, "BMP")
+                    data = output.getvalue()[14:]  # drop BMP file header → DIB
+                    win32clipboard.OpenClipboard()
+                    try:
+                        win32clipboard.EmptyClipboard()
+                        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+                    finally:
+                        win32clipboard.CloseClipboard()
+                    return True
+                except Exception:
+                    ps = (
+                        "Add-Type -AssemblyName System.Windows.Forms; "
+                        "Add-Type -AssemblyName System.Drawing; "
+                        f"$img = [System.Drawing.Image]::FromFile('{path}'); "
+                        "[System.Windows.Forms.Clipboard]::SetImage($img); "
+                        "$img.Dispose()"
+                    )
+                    result = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command", ps],
+                        capture_output=True, timeout=10,
+                    )
+                    return result.returncode == 0
+
+            if platform == "darwin":
+                script = (
+                    f'set the clipboard to (read POSIX file "{path}" as «class PNGf»)'
+                )
+                result = subprocess.run(
+                    ["osascript", "-e", script],
+                    capture_output=True, timeout=10,
+                )
+                return result.returncode == 0
+
+            # Linux / *BSD
+            if shutil.which("wl-copy"):
+                with open(path, "rb") as fh:
+                    result = subprocess.run(
+                        ["wl-copy", "--type", "image/png"],
+                        stdin=fh, capture_output=True, timeout=10,
+                    )
+                if result.returncode == 0:
+                    return True
+            if shutil.which("xclip"):
+                result = subprocess.run(
+                    ["xclip", "-selection", "clipboard", "-t", "image/png", "-i", path],
+                    capture_output=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    return True
+            if shutil.which("xsel"):
+                with open(path, "rb") as fh:
+                    result = subprocess.run(
+                        ["xsel", "--clipboard", "--input"],
+                        stdin=fh, capture_output=True, timeout=10,
+                    )
+                return result.returncode == 0
+        except Exception as exc:
+            print(f"[clipboard] copy failed: {exc}")
+        return False
+
     def clearAll(self) -> None:
         self._captureHistory()
         self.baseImage = None
@@ -3378,6 +3883,8 @@ class RibbonEngineApp:
         self._applyBadgeAwardVisibility()
         if hasattr(self, "manualRibbonSlots"):
             self.manualRibbonSlots.clear()
+            if hasattr(self, "manualSlotColors"):
+                self.manualSlotColors.clear()
             self._manualSelectedSlot = None
             self._redrawManualGrid()
 
@@ -3491,6 +3998,7 @@ class RibbonEngineApp:
                 "bonuses": bonuses,
                 "department_badge": badge,
                 "manual_slots": {str(k): v for k, v in self.manualRibbonSlots.items()},
+                "manual_slot_colors": {str(k): dict(v) for k, v in self.manualSlotColors.items()},
                 "custom_offsets": {n: list(v) for n, v in self.customOffsets.items()},
             }
             _atomicWriteText(self._loadoutPath(name), json.dumps(payload, indent=2))
@@ -3632,6 +4140,377 @@ class RibbonEngineApp:
         photo = ImageTk.PhotoImage(thumb)
         cache[name] = photo
         return photo
+
+    def _openImportUrlDialog(self) -> None:
+        """Prompt for a URL and import a loadout PNG from it.
+
+        Downloads to a temp file, then runs it through the regular
+        `_loadImageFromPath` path so embedded `ribbonengine` metadata
+        applies just like a drag-and-dropped PNG. Only http(s) is
+        accepted; the response is capped at 8 MB to keep a hostile
+        URL from filling the disk.
+        """
+        url = simpledialog.askstring("Import from URL", "Paste a loadout PNG URL:", parent=self.root)
+        if not url:
+            return
+        url = url.strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            messagebox.showerror("Import from URL", "URL must start with http:// or https://")
+            return
+        tmp_path = None
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "RibbonEngine/3"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read(8 * 1024 * 1024 + 1)
+            if len(data) > 8 * 1024 * 1024:
+                messagebox.showerror("Import from URL", "Download exceeded 8 MB; aborting.")
+                return
+            if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                messagebox.showerror("Import from URL", "That URL didn't return a PNG file.")
+                return
+            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="re3_url_")
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            self._loadImageFromPath(tmp_path)
+        except Exception as exc:
+            messagebox.showerror("Import from URL", f"Couldn't fetch URL:\n{exc}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    # ---- In-app ribbon editor (sidecar defaults) ------------------------
+    def _openRibbonEditorDialog(self) -> None:
+        """Edit a ribbon's default sidecar — recolor toggles + base palette.
+
+        This isn't a pixel editor; it edits `<ribbon>.meta.json` for the
+        chosen PNG. Use it when a ribbon needs a different *default* look
+        than the active faction's palette would produce, or to mark it
+        `no_recolor` (bespoke art). Per-slot overrides set in the
+        Ribbon Placement panel take precedence over these defaults.
+        """
+        if not os.path.isdir(assetsRoot):
+            messagebox.showerror("Ribbon editor", "No assets/ directory.")
+            return
+        factions = sorted(
+            f for f in os.listdir(assetsRoot)
+            if os.path.isdir(os.path.join(assetsRoot, f, "ribbons"))
+        )
+        if not factions:
+            messagebox.showerror("Ribbon editor", "No factions with ribbons under assets/.")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Ribbon Editor")
+        dialog.transient(self.root)
+        dialog.configure(background=self.theme["bg"])
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        factionVar = tk.StringVar(value=self.activeFactionKey if self.activeFactionKey in factions else factions[0])
+        ribbonVar = tk.StringVar()
+
+        ttk.Label(frame, text="Faction:").grid(row=0, column=0, sticky="w")
+        factionCombo = ttk.Combobox(frame, textvariable=factionVar, values=factions, state="readonly", width=18)
+        factionCombo.grid(row=0, column=1, columnspan=2, sticky="ew", pady=2)
+
+        ttk.Label(frame, text="Ribbon:").grid(row=1, column=0, sticky="w")
+        ribbonCombo = ttk.Combobox(frame, textvariable=ribbonVar, state="readonly", width=28)
+        ribbonCombo.grid(row=1, column=1, columnspan=2, sticky="ew", pady=2)
+
+        noRecolorVar = tk.IntVar(value=0)
+        ttk.Checkbutton(frame, text="Never recolor this ribbon (bespoke art)", variable=noRecolorVar).grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(8, 4)
+        )
+
+        toggleVars: dict[str, tk.IntVar] = {}
+        colorVars: dict[str, tk.StringVar] = {}
+        for i, region in enumerate(("border", "stripe", "base")):
+            row = 3 + i
+            tv = tk.IntVar(value=1)
+            cv = tk.StringVar()
+            toggleVars[region] = tv
+            colorVars[region] = cv
+            ttk.Checkbutton(frame, text=f"Recolor {region}", variable=tv).grid(row=row, column=0, sticky="w")
+            ttk.Label(frame, text="#").grid(row=row, column=1, sticky="e")
+            vcmd = (self.root.register(self._validateHexEntry), "%P")
+            ttk.Entry(frame, textvariable=cv, width=8, validate="key", validatecommand=vcmd).grid(row=row, column=2, sticky="w")
+
+        previewLabel = ttk.Label(frame, text="", foreground=self.theme.get("status", "#888"))
+        previewLabel.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        def refresh_ribbons(*_):
+            fac = factionVar.get()
+            rdir = os.path.join(assetsRoot, fac, "ribbons")
+            choices = sorted(
+                os.path.splitext(n)[0]
+                for n in (os.listdir(rdir) if os.path.isdir(rdir) else [])
+                if n.lower().endswith(".png")
+            )
+            ribbonCombo["values"] = choices
+            if choices:
+                ribbonVar.set(choices[0])
+            else:
+                ribbonVar.set("")
+
+        def load_current(*_):
+            fac, stem = factionVar.get(), ribbonVar.get().strip()
+            if not fac or not stem:
+                return
+            path = os.path.join(assetsRoot, fac, "ribbons", f"{stem}.png")
+            sidecar = _readRibbonSidecar(path)
+            noRecolorVar.set(1 if sidecar.get("no_recolor") else 0)
+            recolor = sidecar.get("recolor") if isinstance(sidecar.get("recolor"), dict) else {}
+            colors = sidecar.get("colors") if isinstance(sidecar.get("colors"), dict) else {}
+            for region in ("border", "stripe", "base"):
+                toggleVars[region].set(1 if recolor.get(region, True) else 0)
+                hexv = str(colors.get(region, "") or "").lstrip("#")
+                colorVars[region].set(hexv[:6])
+            previewLabel.config(text=f"Editing {os.path.relpath(path, baseDir)}")
+
+        factionVar.trace_add("write", refresh_ribbons)
+        ribbonVar.trace_add("write", load_current)
+        refresh_ribbons()
+        load_current()
+
+        def do_save():
+            fac, stem = factionVar.get(), ribbonVar.get().strip()
+            if not fac or not stem:
+                return
+            path = os.path.join(assetsRoot, fac, "ribbons", f"{stem}.png")
+            data: dict = {}
+            if noRecolorVar.get():
+                data["no_recolor"] = True
+            else:
+                recolor = {r: bool(toggleVars[r].get()) for r in ("border", "stripe", "base")}
+                # Only write a `recolor` block if it overrides defaults.
+                if not all(recolor.values()):
+                    data["recolor"] = recolor
+                colors: dict[str, str] = {}
+                for region in ("border", "stripe", "base"):
+                    hv = colorVars[region].get().strip().lstrip("#")
+                    if len(hv) == 6 and all(c in "0123456789abcdefABCDEF" for c in hv):
+                        colors[region] = f"#{hv.lower()}"
+                if colors:
+                    data["colors"] = colors
+            try:
+                writeRibbonSidecar(path, data)
+                invalidateRibbonCache(path)
+            except Exception as exc:
+                messagebox.showerror("Ribbon editor", f"Save failed: {exc}", parent=dialog)
+                return
+            self._toast(f"Saved sidecar for {stem}")
+            self.schedulePreview()
+
+        def do_clear():
+            fac, stem = factionVar.get(), ribbonVar.get().strip()
+            if not fac or not stem:
+                return
+            path = os.path.join(assetsRoot, fac, "ribbons", f"{stem}.png")
+            try:
+                writeRibbonSidecar(path, {})
+                invalidateRibbonCache(path)
+            except Exception as exc:
+                messagebox.showerror("Ribbon editor", f"Clear failed: {exc}", parent=dialog)
+                return
+            load_current()
+            self._toast(f"Cleared sidecar for {stem}")
+            self.schedulePreview()
+
+        btnRow = ttk.Frame(frame)
+        btnRow.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        ttk.Button(btnRow, text="Save", command=do_save).pack(side="left", padx=2)
+        ttk.Button(btnRow, text="Clear sidecar", command=do_clear).pack(side="left", padx=2)
+        ttk.Button(btnRow, text="Close", command=dialog.destroy).pack(side="right", padx=2)
+
+        frame.columnconfigure(2, weight=1)
+        dialog.grab_set()
+        dialog.focus_set()
+
+    # ---- Faction pack export / import -----------------------------------
+    def _exportFactionPack(self) -> None:
+        """Bundle one faction's JSON + asset tree into a portable ZIP.
+
+        Contents:
+          - `factions/<KEY>.json` (or extracted from `factions.json` if
+            this project still uses the legacy aggregated file)
+          - `assets/<KEY>/**` (all subdirs: ribbons, awards, etc., plus
+            any `.meta.json` sidecars next to ribbons)
+          - `pack.json` — a small manifest with the faction key + version
+        """
+        if not self.factionRegistry:
+            messagebox.showerror("Faction pack", "No factions loaded.")
+            return
+        keys = list(self.factionRegistry.names())
+        if not keys:
+            messagebox.showerror("Faction pack", "No factions to export.")
+            return
+        default_key = self.activeFactionKey if self.activeFactionKey in keys else keys[0]
+        key = simpledialog.askstring(
+            "Export faction pack",
+            f"Faction key to export ({', '.join(keys)}):",
+            initialvalue=default_key,
+            parent=self.root,
+        )
+        if not key:
+            return
+        key = key.strip()
+        if key not in keys:
+            messagebox.showerror("Faction pack", f"Unknown faction {key!r}")
+            return
+        out_path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Save faction pack",
+            initialfile=f"{key}_pack.zip",
+            defaultextension=".zip",
+            filetypes=[("Faction pack (ZIP)", "*.zip"), ("All files", "*.*")],
+        )
+        if not out_path:
+            return
+
+        # Resolve the faction's JSON: prefer per-faction file, fall back
+        # to slicing it out of an aggregated factions.json.
+        faction_json_bytes: Optional[bytes] = None
+        per_path = os.path.join(baseDir, "factions", f"{key}.json")
+        if os.path.isfile(per_path):
+            with open(per_path, "rb") as fh:
+                faction_json_bytes = fh.read()
+        else:
+            agg_path = os.path.join(baseDir, "factions.json")
+            if os.path.isfile(agg_path):
+                try:
+                    with open(agg_path, "r", encoding="utf-8-sig") as fh:
+                        agg = json.load(fh)
+                    spec = (agg.get("factions") or {}).get(key)
+                    if spec is not None:
+                        faction_json_bytes = json.dumps(spec, indent=2).encode("utf-8")
+                except Exception as exc:
+                    messagebox.showerror("Faction pack", f"Couldn't read factions.json: {exc}")
+                    return
+
+        asset_dir = os.path.join(assetsRoot, key)
+        if faction_json_bytes is None and not os.path.isdir(asset_dir):
+            messagebox.showerror("Faction pack", f"No config or assets found for {key!r}.")
+            return
+
+        manifest = {
+            "kind": "ribbonengine-faction-pack",
+            "version": 1,
+            "faction_key": key,
+            "exported_at": datetime.datetime.utcnow().isoformat() + "Z",
+        }
+        tmp_path = out_path + ".tmp"
+        try:
+            with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("pack.json", json.dumps(manifest, indent=2))
+                if faction_json_bytes is not None:
+                    zf.writestr(f"factions/{key}.json", faction_json_bytes)
+                if os.path.isdir(asset_dir):
+                    for root, _dirs, files in os.walk(asset_dir):
+                        for fname in files:
+                            full = os.path.join(root, fname)
+                            rel = os.path.relpath(full, baseDir).replace(os.sep, "/")
+                            zf.write(full, rel)
+            os.replace(tmp_path, out_path)
+        except Exception as exc:
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            messagebox.showerror("Faction pack", f"Export failed: {exc}")
+            return
+        self._toast(f"Exported {key} pack")
+
+    def _importFactionPack(self) -> None:
+        """Install a faction pack ZIP into this project.
+
+        Validates the manifest, refuses paths that would escape the
+        project (zip-slip guard), warns before overwriting existing
+        files, and reloads assets when done.
+        """
+        zip_path = filedialog.askopenfilename(
+            parent=self.root,
+            title="Import faction pack",
+            filetypes=[("Faction pack (ZIP)", "*.zip"), ("All files", "*.*")],
+        )
+        if not zip_path:
+            return
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                try:
+                    manifest = json.loads(zf.read("pack.json").decode("utf-8"))
+                except KeyError:
+                    messagebox.showerror("Faction pack", "Missing pack.json in archive.")
+                    return
+                if manifest.get("kind") != "ribbonengine-faction-pack":
+                    messagebox.showerror("Faction pack", "Not a Ribbon Engine faction pack.")
+                    return
+                key = str(manifest.get("faction_key") or "").strip()
+                if not key:
+                    messagebox.showerror("Faction pack", "Pack manifest is missing faction_key.")
+                    return
+
+                # Zip-slip guard: every entry must resolve inside baseDir
+                # and live under either factions/ or assets/<KEY>/.
+                base_real = os.path.realpath(baseDir)
+                planned: list[tuple[str, str]] = []
+                for info in zf.infolist():
+                    name = info.filename
+                    if name.endswith("/") or name == "pack.json":
+                        continue
+                    norm = name.replace("\\", "/")
+                    if norm.startswith("/") or ".." in norm.split("/"):
+                        messagebox.showerror("Faction pack", f"Unsafe path in archive: {name}")
+                        return
+                    allowed = (
+                        norm == f"factions/{key}.json"
+                        or norm.startswith(f"assets/{key}/")
+                    )
+                    if not allowed:
+                        messagebox.showerror(
+                            "Faction pack",
+                            f"Archive contains unexpected path: {name}\n"
+                            f"(expected only factions/{key}.json or assets/{key}/…)",
+                        )
+                        return
+                    target = os.path.realpath(os.path.join(baseDir, norm))
+                    if not target.startswith(base_real + os.sep) and target != base_real:
+                        messagebox.showerror("Faction pack", f"Unsafe path in archive: {name}")
+                        return
+                    planned.append((name, target))
+
+                overwrites = [t for _n, t in planned if os.path.exists(t)]
+                if overwrites:
+                    if not messagebox.askyesno(
+                        "Faction pack",
+                        f"This pack will overwrite {len(overwrites)} existing file(s) for "
+                        f"faction {key!r}. Continue?",
+                        parent=self.root,
+                    ):
+                        return
+
+                for name, target in planned:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    data = zf.read(name)
+                    tmp = target + ".tmp"
+                    with open(tmp, "wb") as fh:
+                        fh.write(data)
+                    os.replace(tmp, target)
+        except zipfile.BadZipFile:
+            messagebox.showerror("Faction pack", "That file isn't a valid ZIP.")
+            return
+        except Exception as exc:
+            messagebox.showerror("Faction pack", f"Import failed: {exc}")
+            return
+
+        self._toast(f"Imported {key} pack")
+        try:
+            self.reloadAssets()
+        except Exception as exc:
+            messagebox.showerror("Faction pack", f"Reload failed: {exc}")
 
     def _openLoadoutDialog(self) -> None:
         dialog = tk.Toplevel(self.root)
@@ -3948,6 +4827,7 @@ class RibbonEngineApp:
         ttk.Label(coordsTab, text="Part").grid(row=0, column=0, sticky="w")
         ttk.Label(coordsTab, text="X").grid(row=0, column=1, sticky="w")
         ttk.Label(coordsTab, text="Y").grid(row=0, column=2, sticky="w")
+        partCoordVars: dict[str, tuple[tk.IntVar, tk.IntVar]] = {}
         for i, partKey in enumerate(partCoordsKeys, start=1):
             ttk.Label(coordsTab, text=partKey).grid(row=i, column=0, sticky="w", padx=4, pady=2)
             coords = (profile.get("part_coords") or {}).get(partKey, [0, 0])
@@ -3955,8 +4835,23 @@ class RibbonEngineApp:
             vy = tk.IntVar(value=int(coords[1]) if isinstance(coords, (list, tuple)) and len(coords) > 1 else 0)
             intVars[("part_coords", partKey, 0)] = vx
             intVars[("part_coords", partKey, 1)] = vy
+            partCoordVars[partKey] = (vx, vy)
             tk.Spinbox(coordsTab, from_=-999, to=999, textvariable=vx, width=6).grid(row=i, column=1, padx=4)
             tk.Spinbox(coordsTab, from_=-999, to=999, textvariable=vy, width=6).grid(row=i, column=2, padx=4)
+
+        def _resetPartCoordsToDefaults() -> None:
+            # Rewrites every Part-coord spinbox to the canonical 128x128 layout.
+            # The user still has to click Save (or Save raw) for it to persist.
+            for key, (vx_, vy_) in partCoordVars.items():
+                dx, dy = DEFAULT_PART_COORDS[key]
+                vx_.set(dx)
+                vy_.set(dy)
+
+        ttk.Button(
+            coordsTab,
+            text="Reset to defaults",
+            command=_resetPartCoordsToDefaults,
+        ).grid(row=len(partCoordsKeys) + 1, column=0, columnspan=3, pady=(10, 0), sticky="w", padx=4)
 
         # Offsets tab
         offsetsTab = ttk.Frame(notebook, padding=10)
@@ -4375,6 +5270,7 @@ class RibbonEngineApp:
             "nameplate": self.entry.get(),
             "offsets": dict(self.customOffsets),
             "manual_slots": dict(getattr(self, "manualRibbonSlots", {})),
+            "manual_slot_colors": {k: dict(v) for k, v in getattr(self, "manualSlotColors", {}).items()},
         }
 
     def _captureHistory(self) -> None:
@@ -4400,6 +5296,9 @@ class RibbonEngineApp:
             self.customOffsets = dict(snapshot.get("offsets", {}))
             if hasattr(self, "manualRibbonSlots"):
                 self.manualRibbonSlots = {int(k): v for k, v in snapshot.get("manual_slots", {}).items()}
+                self.manualSlotColors = {
+                    int(k): dict(v) for k, v in (snapshot.get("manual_slot_colors") or {}).items() if isinstance(v, dict)
+                }
                 self._manualSelectedSlot = None
                 self._redrawManualGrid()
         finally:
@@ -4520,8 +5419,12 @@ class RibbonEngineApp:
         top.pack(fill="x")
         ttk.Label(top, text="Ribbon:").pack(side="left")
         self.manualRibbonComboVar = tk.StringVar()
-        self.manualRibbonCombo = ttk.Combobox(top, textvariable=self.manualRibbonComboVar, state="readonly")
+        # `state="normal"` makes the combobox editable so typing filters the
+        # dropdown. KeyRelease re-filters; click on a result populates the var.
+        self.manualRibbonCombo = ttk.Combobox(top, textvariable=self.manualRibbonComboVar, state="normal")
         self.manualRibbonCombo.pack(side="left", padx=(4, 4), fill="x", expand=True)
+        self.manualRibbonCombo.bind("<KeyRelease>", self._onManualRibbonFilter)
+        self._manualRibbonAllChoices: list[str] = []
         ttk.Button(top, text="Remove", width=8, command=self._onManualRemove).pack(side="right")
 
         body = ttk.Frame(frame)
@@ -4537,10 +5440,23 @@ class RibbonEngineApp:
         self.manualGridCanvas.pack(side="left")
         self.manualGridCanvas.bind("<Button-1>", self._onManualGridClick)
         self.manualGridCanvas.bind("<Button-3>", self._onManualGridRightClick)
+        # Keyboard shortcuts: focus the canvas first (click) and these fire.
+        self.manualGridCanvas.configure(takefocus=True)
+        self.manualGridCanvas.bind("<FocusIn>", lambda _e: self._redrawManualGrid())
+        self.manualGridCanvas.bind("<Button-1>", lambda e: (self.manualGridCanvas.focus_set(), self._onManualGridClick(e))[1], add="+")
+        for key in ("<Delete>", "<BackSpace>"):
+            self.manualGridCanvas.bind(key, lambda _e: self._onManualKeyDelete())
+        self.manualGridCanvas.bind("<Left>",  lambda _e: self._moveManualSelection(-1, 0))
+        self.manualGridCanvas.bind("<Right>", lambda _e: self._moveManualSelection(1, 0))
+        self.manualGridCanvas.bind("<Up>",    lambda _e: self._moveManualSelection(0, -1))
+        self.manualGridCanvas.bind("<Down>",  lambda _e: self._moveManualSelection(0, 1))
+        self.manualGridCanvas.bind("<Return>", lambda _e: self._onManualKeyPlace())
+        self.manualGridCanvas.bind("r", lambda _e: self._focusRecolorEntry())
+        self.manualGridCanvas.bind("R", lambda _e: self._focusRecolorEntry())
 
         side = ttk.Frame(body)
         side.pack(side="left", padx=(8, 0), fill="both", expand=True)
-        self.manualHintLabel = ttk.Label(side, text="Pick a ribbon, then click an empty slot.", wraplength=140, justify="left")
+        self.manualHintLabel = ttk.Label(side, text="Pick a ribbon, then click an empty slot. Click a placed ribbon to recolor it.", wraplength=180, justify="left")
         self.manualHintLabel.pack(anchor="w")
         ttk.Button(side, text="Reset", command=self._onManualReset).pack(anchor="w", pady=(8, 0))
 
@@ -4548,11 +5464,13 @@ class RibbonEngineApp:
         recolorBox = ttk.LabelFrame(side, text="Recolor selected ribbon (hex)", padding=4)
         recolorBox.pack(anchor="w", fill="x", pady=(10, 0))
         self.manualRecolorVars: dict[str, tk.StringVar] = {}
+        self.manualRecolorSwatches: dict[str, tk.Label] = {}
         vcmd = (self.root.register(self._validateHexEntry), "%P")
         for label in ("border", "stripe", "base"):
             row = ttk.Frame(recolorBox)
             row.pack(fill="x", pady=1)
-            ttk.Label(row, text=label.capitalize(), width=7).pack(side="left")
+            region_label = ttk.Label(row, text=label.capitalize(), width=7)
+            region_label.pack(side="left")
             ttk.Label(row, text="#").pack(side="left")
             var = tk.StringVar()
             entry = ttk.Entry(
@@ -4561,10 +5479,26 @@ class RibbonEngineApp:
             )
             entry.pack(side="left", padx=(1, 0))
             self.manualRecolorVars[label] = var
+            if label == "border":
+                self._manualRecolorBorderEntry = entry
+            # Swatch button — clicking opens a color picker; the bg reflects
+            # the current hex so the user can eyeball the color at a glance.
+            swatch = tk.Label(row, text="  ", relief="solid", borderwidth=1, cursor="hand2", bg="#888888")
+            swatch.pack(side="left", padx=(4, 0))
+            swatch.bind("<Button-1>", lambda _e, r=label: self._openRecolorPicker(r))
+            self.manualRecolorSwatches[label] = swatch
+            # Right-click any entry → copy menu (#RRGGBB / 0xRRGGBB).
+            entry.bind("<Button-3>", lambda e, r=label: self._showHexContextMenu(e, r))
+            # Live swatch sync as user types.
+            var.trace_add("write", lambda *_a, r=label: self._syncSwatchColor(r))
+            # Tooltip — shows the current effective source for this region.
+            _Tooltip(region_label, lambda r=label: self._recolorRegionTooltip(r))
+            _Tooltip(swatch, "Click to pick a color")
         btnRow = ttk.Frame(recolorBox)
         btnRow.pack(fill="x", pady=(4, 0))
         ttk.Button(btnRow, text="Apply", width=7, command=self._onApplyRibbonColors).pack(side="left")
         ttk.Button(btnRow, text="Clear", width=7, command=self._onClearRibbonColors).pack(side="left", padx=(4, 0))
+        ttk.Button(btnRow, text="Reset", width=7, command=self._onResetAllRibbonColors).pack(side="left", padx=(4, 0))
 
         self._manualSelectedSlot: Optional[int] = None
         self._manualThumbCache: dict[int, ImageTk.PhotoImage] = {}
@@ -4620,6 +5554,7 @@ class RibbonEngineApp:
         if not hasattr(self, "manualRibbonCombo"):
             return
         names = sorted(item.name for item in self.ribbonGroups.get("ribbons", []))
+        self._manualRibbonAllChoices = names
         try:
             self.manualRibbonCombo["values"] = names
             if names and self.manualRibbonComboVar.get() not in names:
@@ -4627,7 +5562,26 @@ class RibbonEngineApp:
         except (tk.TclError, AttributeError):
             pass
 
-    def _manualThumbnail(self, ribbon_name: str) -> Optional[ImageTk.PhotoImage]:
+    def _onManualRibbonFilter(self, event) -> None:
+        """KeyRelease handler: typing in the dropdown filters its values list.
+
+        Skips navigation keys (arrows, Return, Escape) so they pass through
+        to the combobox's own listbox behavior.
+        """
+        if event.keysym in ("Up", "Down", "Return", "Escape", "Tab"):
+            return
+        typed = self.manualRibbonComboVar.get().lower().strip()
+        all_choices = getattr(self, "_manualRibbonAllChoices", []) or []
+        if not typed:
+            filtered = all_choices
+        else:
+            filtered = [n for n in all_choices if typed in n.lower()]
+        try:
+            self.manualRibbonCombo["values"] = filtered or all_choices
+        except tk.TclError:
+            pass
+
+    def _manualThumbnail(self, ribbon_name: str, slot_idx: Optional[int] = None) -> Optional[ImageTk.PhotoImage]:
         """Recolored, cell-sized thumbnail for a ribbon name.
 
         Goes through `loadRibbonImage` so the thumbnail matches whatever
@@ -4641,8 +5595,12 @@ class RibbonEngineApp:
         item = next((i for i in self.ribbonGroups.get("ribbons", []) if i.name == ribbon_name), None)
         if item is None:
             return None
+        slot_override = self.manualSlotColors.get(slot_idx) if slot_idx is not None else None
         try:
-            img = loadRibbonImage(item, factionKey=self.activeFactionKey).copy()
+            if slot_override:
+                img = renderRibbonWithColors(item, self.activeFactionKey, slot_override).copy()
+            else:
+                img = loadRibbonImage(item, factionKey=self.activeFactionKey).copy()
         except Exception:
             return None
         img = img.resize((self._MANUAL_CELL_W, self._MANUAL_CELL_H), Image.NEAREST)
@@ -4672,12 +5630,124 @@ class RibbonEngineApp:
             canvas.create_rectangle(x1, y1, x2, y2, fill=empty_bg, outline=border)
             name = self.manualRibbonSlots.get(slot_idx)
             if name:
-                thumb = self._manualThumbnail(name)
+                thumb = self._manualThumbnail(name, slot_idx)
                 if thumb is not None:
                     self._manualThumbCache[slot_idx] = thumb
                     canvas.create_image(x1, y1, image=thumb, anchor="nw")
             if slot_idx == self._manualSelectedSlot:
                 canvas.create_rectangle(x1, y1, x2, y2, outline=accent, width=2)
+            if slot_idx == getattr(self, "_dragHoverSlot", None):
+                canvas.create_rectangle(x1, y1, x2, y2, outline=accent, width=3, dash=(3, 2))
+
+    # ---- Sidebar → manual-grid drag-and-drop -----------------------------
+    _DRAG_THRESHOLD_PX = 6
+
+    def _onSidebarDragStart(self, event, ribbonName: str) -> None:
+        """Record press position; drag only starts after a small threshold."""
+        self._dragData = {
+            "name": ribbonName,
+            "start_x": event.x_root,
+            "start_y": event.y_root,
+            "active": False,
+            "tip": None,
+        }
+
+    def _onSidebarDragMotion(self, event) -> None:
+        data = getattr(self, "_dragData", None)
+        if not data:
+            return
+        dx = abs(event.x_root - data["start_x"])
+        dy = abs(event.y_root - data["start_y"])
+        if not data["active"] and max(dx, dy) < self._DRAG_THRESHOLD_PX:
+            return
+        # Activate drag once threshold is crossed.
+        if not data["active"]:
+            data["active"] = True
+            try:
+                tip = tk.Toplevel(self.root)
+                tip.wm_overrideredirect(True)
+                tip.attributes("-topmost", True)
+                ttk.Label(
+                    tip,
+                    text=f"→ {data['name']}",
+                    background="#222222",
+                    foreground="#ffffff",
+                    padding=(6, 2),
+                ).pack()
+                data["tip"] = tip
+            except tk.TclError:
+                data["tip"] = None
+        tip = data.get("tip")
+        if tip is not None:
+            try:
+                tip.geometry(f"+{event.x_root + 12}+{event.y_root + 12}")
+            except tk.TclError:
+                pass
+        # Highlight the slot under cursor by tracking it on the canvas.
+        slot = self._slotAtRootXY(event.x_root, event.y_root)
+        self._dragHoverSlot = slot
+        if hasattr(self, "manualGridCanvas"):
+            self._redrawManualGrid()
+
+    def _onSidebarDragEnd(self, event) -> None:
+        data = getattr(self, "_dragData", None)
+        if not data:
+            return
+        tip = data.get("tip")
+        if tip is not None:
+            try:
+                tip.destroy()
+            except tk.TclError:
+                pass
+        active = data.get("active", False)
+        name = data.get("name", "")
+        self._dragData = None
+        self._dragHoverSlot = None
+        if not active:
+            # Below threshold → let the checkbox toggle normally.
+            return
+        slot = self._slotAtRootXY(event.x_root, event.y_root)
+        if slot is None or not name:
+            if hasattr(self, "manualGridCanvas"):
+                self._redrawManualGrid()
+            return
+        # Place ribbon in slot (overwriting any existing occupant).
+        self._captureHistory()
+        self.manualRibbonSlots[slot] = name
+        # If we overwrote a different ribbon, drop the old per-slot color override.
+        self.manualSlotColors.pop(slot, None)
+        self._manualSelectedSlot = slot
+        if hasattr(self, "manualRibbonCombo"):
+            try:
+                values = self.manualRibbonCombo["values"] or ()
+                if name in values:
+                    self.manualRibbonComboVar.set(name)
+            except tk.TclError:
+                pass
+        if hasattr(self, "manualHintLabel"):
+            self.manualHintLabel.config(text=f"Placed {name} in slot {slot + 1}.")
+        self._loadRibbonColorsIntoFields()
+        self._redrawManualGrid()
+        self.saveCurrentSettings()
+        self.schedulePreview()
+
+    def _slotAtRootXY(self, root_x: int, root_y: int) -> Optional[int]:
+        """Translate screen coords to a manual-grid slot index, or None."""
+        canvas = getattr(self, "manualGridCanvas", None)
+        if canvas is None:
+            return None
+        try:
+            if not canvas.winfo_ismapped():
+                return None
+            cx = root_x - canvas.winfo_rootx()
+            cy = root_y - canvas.winfo_rooty()
+        except tk.TclError:
+            return None
+        rects, _, _ = self._manualGridLayout()
+        for slot_idx, x1, y1, x2, y2 in rects:
+            if x1 <= cx < x2 and y1 <= cy < y2:
+                return slot_idx
+        return None
 
     def _onManualGridClick(self, event) -> None:
         """Handle a left-click anywhere on the manual placement canvas.
@@ -4700,8 +5770,12 @@ class RibbonEngineApp:
                 pending = self.manualRibbonComboVar.get()
                 existing = self.manualRibbonSlots.get(slot_idx)
                 if existing and (not pending or existing == pending):
-                    # Tap a filled slot → select for removal.
+                    # Tap a filled slot → select for removal AND surface it in
+                    # the dropdown so the recolor fields target this ribbon.
                     self._manualSelectedSlot = slot_idx
+                    if existing in (self.manualRibbonCombo["values"] or ()):
+                        self.manualRibbonComboVar.set(existing)
+                    self._loadRibbonColorsIntoFields()
                     self.manualHintLabel.config(text=f"Selected: {existing}. Click Remove to delete.")
                 elif pending:
                     self._captureHistory()
@@ -4726,6 +5800,7 @@ class RibbonEngineApp:
                 removed = self.manualRibbonSlots[slot_idx]
                 self._captureHistory()
                 self.manualRibbonSlots.pop(slot_idx)
+                self.manualSlotColors.pop(slot_idx, None)
                 if self._manualSelectedSlot == slot_idx:
                     self._manualSelectedSlot = None
                 self.manualHintLabel.config(text=f"Removed {removed} from slot {slot_idx + 1}.")
@@ -4733,6 +5808,73 @@ class RibbonEngineApp:
                 self.saveCurrentSettings()
                 self.schedulePreview()
                 return
+
+    def _syncSwatchColor(self, region: str) -> None:
+        """Update the small color swatch next to a hex entry."""
+        swatch = self.manualRecolorSwatches.get(region) if hasattr(self, "manualRecolorSwatches") else None
+        if swatch is None:
+            return
+        text = self.manualRecolorVars[region].get().strip().lstrip("#")
+        if len(text) == 6 and all(c in "0123456789abcdefABCDEF" for c in text):
+            try:
+                swatch.configure(bg=f"#{text.lower()}")
+                return
+            except tk.TclError:
+                pass
+        swatch.configure(bg="#888888")
+
+    def _openRecolorPicker(self, region: str) -> None:
+        """Open the system color picker; selection writes into the entry."""
+        current = self.manualRecolorVars[region].get().strip().lstrip("#")
+        initial = f"#{current.lower()}" if len(current) == 6 else "#888888"
+        try:
+            chosen = colorchooser.askcolor(color=initial, parent=self.root, title=f"Pick {region} color")
+        except tk.TclError:
+            return
+        if not chosen or not chosen[1]:
+            return
+        self.manualRecolorVars[region].set(chosen[1].lstrip("#").lower())
+
+    def _showHexContextMenu(self, event, region: str) -> None:
+        """Right-click menu on a hex entry: copy as #RRGGBB or 0xRRGGBB."""
+        text = self.manualRecolorVars[region].get().strip().lstrip("#")
+        if len(text) != 6:
+            return
+        menu = tk.Menu(self.root, tearoff=False)
+        hex_form = f"#{text.lower()}"
+        ox_form = f"0x{text.lower()}"
+        menu.add_command(label=f"Copy  {hex_form}", command=lambda: self._copyToClipboard(hex_form))
+        menu.add_command(label=f"Copy  {ox_form}", command=lambda: self._copyToClipboard(ox_form))
+        menu.add_command(label=f"Copy  {text.lower()}", command=lambda: self._copyToClipboard(text.lower()))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _copyToClipboard(self, text: str) -> None:
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self._toast(f"Copied {text}")
+        except tk.TclError:
+            pass
+
+    def _recolorRegionTooltip(self, region: str) -> str:
+        """Describe where the field's value is currently coming from."""
+        slot = getattr(self, "_manualSelectedSlot", None)
+        text = self.manualRecolorVars[region].get().strip()
+        sources = []
+        if slot is not None and slot in self.manualSlotColors:
+            if region in self.manualSlotColors[slot]:
+                sources.append("per-slot override")
+        path = self._currentRibbonAssetPath()
+        if path:
+            sidecar = _readRibbonSidecar(path)
+            if isinstance(sidecar.get("colors"), dict) and sidecar["colors"].get(region):
+                sources.append("sidecar")
+        if not sources:
+            sources.append("faction palette")
+        return f"{region.capitalize()}: #{text}\nsource: {sources[0]}"
 
     def _validateHexEntry(self, proposed: str) -> bool:
         """Tk validatecommand: allow only up to 6 hex digits (no leading #)."""
@@ -4751,20 +5893,30 @@ class RibbonEngineApp:
         """Populate the three hex Entry fields.
 
         Order of preference per region:
-          1. Sidecar `colors.<region>` if set.
-          2. Active faction's palette color for that region (so the user can
-             see what's currently being applied and tweak from there).
+          1. Per-slot override for the currently selected manual slot.
+          2. Sidecar `colors.<region>` for the selected ribbon's PNG.
+          3. Active faction's palette color (so the user can see the current
+             effective color and tweak from there).
         """
         if not hasattr(self, "manualRecolorVars"):
             return
+
+        # Layer 1: per-slot override.
+        slot = getattr(self, "_manualSelectedSlot", None)
+        slot_colors: dict = {}
+        if slot is not None:
+            slot_colors = dict(self.manualSlotColors.get(slot, {}))
+
+        # Layer 2: sidecar.
         path = self._currentRibbonAssetPath()
-        colors: dict = {}
+        sidecar_colors: dict = {}
         if path:
             sidecar = _readRibbonSidecar(path)
             raw = sidecar.get("colors")
             if isinstance(raw, dict):
-                colors = raw
+                sidecar_colors = raw
 
+        # Layer 3: faction palette.
         try:
             registry = getFactionRegistry()
             faction = registry.factions.get(self.activeFactionKey)
@@ -4783,16 +5935,21 @@ class RibbonEngineApp:
                 "base": _rgb_to_hex6(palette.base_color),
             }
         for region, var in self.manualRecolorVars.items():
-            override = colors.get(region)
-            if isinstance(override, str) and override.strip():
-                var.set(override.strip().lstrip("#").lower()[:6])
+            value = slot_colors.get(region) or sidecar_colors.get(region) or defaults.get(region, "")
+            if isinstance(value, str) and value.strip():
+                var.set(value.strip().lstrip("#").lower()[:6])
             else:
-                var.set(defaults.get(region, ""))
+                var.set("")
+            self._syncSwatchColor(region)
 
     def _onApplyRibbonColors(self) -> None:
-        path = self._currentRibbonAssetPath()
-        if not path:
-            messagebox.showinfo("Recolor", "Pick a ribbon first.")
+        slot = getattr(self, "_manualSelectedSlot", None)
+        if slot is None or slot not in self.manualRibbonSlots:
+            messagebox.showinfo(
+                "Recolor",
+                "Click a placed ribbon in the grid first — recolor is per-slot, so "
+                "duplicates can be tinted independently.",
+            )
             return
         new_colors: dict[str, str] = {}
         for region, var in self.manualRecolorVars.items():
@@ -4803,35 +5960,67 @@ class RibbonEngineApp:
                 messagebox.showerror("Invalid hex", f"{region.capitalize()} color {text!r} must be 6 hex digits.")
                 return
             new_colors[region] = f"#{text.lower()}"
-        sidecar = _readRibbonSidecar(path)
+        self._captureHistory()
         if new_colors:
-            sidecar["colors"] = new_colors
-            # Auto-enable matching recolor regions for this ribbon so the
-            # custom colors actually show (otherwise stripe/base hex would be
-            # silently ignored when those toggles are off in Settings).
-            sidecar_recolor = sidecar.get("recolor") if isinstance(sidecar.get("recolor"), dict) else {}
-            for region in new_colors:
-                sidecar_recolor[region] = True
-            sidecar["recolor"] = sidecar_recolor
+            self.manualSlotColors[slot] = new_colors
         else:
-            sidecar.pop("colors", None)
-        try:
-            writeRibbonSidecar(path, sidecar)
-        except Exception as exc:
-            messagebox.showerror("Save failed", str(exc))
-            return
-        invalidateRibbonCache(path)
+            self.manualSlotColors.pop(slot, None)
         self._manualThumbCache.clear()
-        if hasattr(self, "_loadoutThumbCache"):
-            self._loadoutThumbCache.clear()
         self._redrawManualGrid()
+        self.saveCurrentSettings()
         self.schedulePreview()
-        self._toast(f"Saved colors for {self.manualRibbonComboVar.get()!r}")
+        ribbon_name = self.manualRibbonSlots.get(slot, "")
+        self._toast(f"Recolored slot {slot + 1} ({ribbon_name!r})")
 
     def _onClearRibbonColors(self) -> None:
-        for var in self.manualRecolorVars.values():
-            var.set("")
-        self._onApplyRibbonColors()
+        """Drop any per-slot color override on the selected slot and refresh."""
+        slot = getattr(self, "_manualSelectedSlot", None)
+        if slot is None or slot not in self.manualRibbonSlots:
+            for var in self.manualRecolorVars.values():
+                var.set("")
+            return
+        self._captureHistory()
+        self.manualSlotColors.pop(slot, None)
+        self._manualThumbCache.clear()
+        self._redrawManualGrid()
+        self.saveCurrentSettings()
+        self.schedulePreview()
+        self._loadRibbonColorsIntoFields()
+        self._toast(f"Cleared colors for slot {slot + 1}")
+
+    def _onResetAllRibbonColors(self) -> None:
+        """Wipe every per-slot color override across the whole grid.
+
+        After Reset, the manual-recolor framework effectively isn't in
+        play: every placed ribbon falls back to the active faction's
+        palette. The moment the user types into a hex field and clicks
+        Apply again, that slot reacquires its override and the loop
+        starts over. No-op (with a quiet toast) when there are no
+        overrides to clear.
+        """
+        if not self.manualSlotColors:
+            for var in self.manualRecolorVars.values():
+                var.set("")
+            self._toast("No per-ribbon colors to reset.")
+            return
+        if not messagebox.askyesno(
+            "Reset ribbon colors",
+            f"Clear per-ribbon color overrides on all "
+            f"{len(self.manualSlotColors)} slot(s)? "
+            f"Ribbons will revert to the faction palette.",
+            parent=self.root,
+        ):
+            return
+        self._captureHistory()
+        self.manualSlotColors.clear()
+        self._manualThumbCache.clear()
+        self._redrawManualGrid()
+        self.saveCurrentSettings()
+        self.schedulePreview()
+        # Refresh entry fields against whatever slot is currently selected
+        # (now showing palette defaults since the override is gone).
+        self._loadRibbonColorsIntoFields()
+        self._toast("Reset all ribbon colors.")
 
     def _onManualRemove(self) -> None:
         """Delete the currently selected manual slot (or the last-placed one).
@@ -4849,11 +6038,99 @@ class RibbonEngineApp:
             return
         self._captureHistory()
         self.manualRibbonSlots.pop(target)
+        self.manualSlotColors.pop(target, None)
         self._manualSelectedSlot = None
         self.manualHintLabel.config(text="Pick a ribbon, then click an empty slot.")
         self._redrawManualGrid()
         self.saveCurrentSettings()
         self.schedulePreview()
+
+    def _onManualKeyDelete(self) -> str:
+        """Delete key: drop the currently selected slot."""
+        slot = self._manualSelectedSlot
+        if slot is None or slot not in self.manualRibbonSlots:
+            return "break"
+        removed = self.manualRibbonSlots[slot]
+        self._captureHistory()
+        self.manualRibbonSlots.pop(slot)
+        self.manualSlotColors.pop(slot, None)
+        self.manualHintLabel.config(text=f"Removed {removed} from slot {slot + 1}.")
+        self._redrawManualGrid()
+        self.saveCurrentSettings()
+        self.schedulePreview()
+        return "break"
+
+    def _onManualKeyPlace(self) -> str:
+        """Enter key: place the dropdown ribbon into the selected empty slot."""
+        slot = self._manualSelectedSlot
+        pending = self.manualRibbonComboVar.get() if hasattr(self, "manualRibbonComboVar") else ""
+        if slot is None or not pending or slot in self.manualRibbonSlots:
+            return "break"
+        self._captureHistory()
+        self.manualRibbonSlots[slot] = pending
+        self.manualHintLabel.config(text=f"Placed {pending} in slot {slot + 1}.")
+        self._redrawManualGrid()
+        self.saveCurrentSettings()
+        self.schedulePreview()
+        return "break"
+
+    def _moveManualSelection(self, dx: int, dy: int) -> str:
+        """Arrow keys: move the selection within the slot grid."""
+        rects, _, _ = self._manualGridLayout()
+        if not rects:
+            return "break"
+        # Build a lookup from slot_idx to (row, col) using rect order.
+        # Rects are emitted row-by-row (top to bottom) but row 1 is at the
+        # bottom, so build the grid array directly from positions.
+        cells: dict[int, tuple[int, int]] = {}
+        rows: dict[int, list[int]] = {}
+        for slot_idx, x1, y1, _, _ in rects:
+            rows.setdefault(y1, []).append(slot_idx)
+        sorted_ys = sorted(rows.keys())
+        for r, y in enumerate(sorted_ys):
+            row_slots = sorted(rows[y], key=lambda s: next(rc[1] for rc in rects if rc[0] == s))
+            for c, s in enumerate(row_slots):
+                cells[s] = (r, c)
+        if self._manualSelectedSlot is None or self._manualSelectedSlot not in cells:
+            self._manualSelectedSlot = rects[0][0]
+        else:
+            r, c = cells[self._manualSelectedSlot]
+            nr, nc = r + dy, c + dx
+            target = None
+            for s, (rr, cc) in cells.items():
+                if rr == nr and cc == nc:
+                    target = s
+                    break
+            if target is not None:
+                self._manualSelectedSlot = target
+        # Surface the selection into the recolor box.
+        existing = self.manualRibbonSlots.get(self._manualSelectedSlot)
+        if existing and existing in (self.manualRibbonCombo["values"] or ()):
+            self.manualRibbonComboVar.set(existing)
+        self._loadRibbonColorsIntoFields()
+        self._redrawManualGrid()
+        return "break"
+
+    def _focusRecolorEntry(self) -> str:
+        """R key: jump focus to the Border hex entry."""
+        if not hasattr(self, "manualRecolorVars"):
+            return "break"
+        # Find the Entry widget for border and focus it.
+        for child in self.root.winfo_children():
+            pass  # Walk happens via tk.focus_set on the var's binder; simpler:
+        # The Entry's textvariable is manualRecolorVars["border"] — grab its widget.
+        for w in self.root.tk.call("info", "commands") if False else []:  # no-op
+            pass
+        # Simplest: focus the root and rely on Tab — but that's clunky. Instead,
+        # remember the Border entry directly when we built it.
+        widget = getattr(self, "_manualRecolorBorderEntry", None)
+        if widget is not None:
+            try:
+                widget.focus_set()
+                widget.select_range(0, "end")
+            except tk.TclError:
+                pass
+        return "break"
 
     def _onManualReset(self) -> None:
         """Clear every manual slot in one shot.
@@ -4863,10 +6140,11 @@ class RibbonEngineApp:
         triggers a save + preview re-render. No-op when nothing is
         placed and no cell is selected.
         """
-        if not self.manualRibbonSlots and self._manualSelectedSlot is None:
+        if not self.manualRibbonSlots and self._manualSelectedSlot is None and not self.manualSlotColors:
             return
         self._captureHistory()
         self.manualRibbonSlots.clear()
+        self.manualSlotColors.clear()
         self._manualSelectedSlot = None
         self.manualHintLabel.config(text="Pick a ribbon, then click an empty slot.")
         self._redrawManualGrid()
