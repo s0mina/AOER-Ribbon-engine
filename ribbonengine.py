@@ -163,7 +163,7 @@ METADATA_SCHEMA_VERSION = 2
 
 # The app's own release version, compared against the latest GitHub Release tag
 # by the self-updater. Keep this in lock-step with the pushed ``vX.Y`` tag.
-APP_VERSION = "1.3"
+APP_VERSION = "1.4"
 
 
 class _Tooltip:
@@ -375,6 +375,26 @@ defaultProfile = {
         "right_start_row": ribbonRightStartRow,
         "first_right_row_capacity": ribbonRightFirstRowCapacity,
         "subsequent_right_row_capacity": ribbonRightSubsequentRowCapacity,
+    },
+    # Per-slot (x, y) nudges added to each medal's auto-computed pocket
+    # position. award_* applies to the award row (under the ribbons); bonus_*
+    # applies to the bonus row (under the nametape). 0 = no change (auto layout).
+    "medal_slot_offsets": {
+        "award_1_x": 0,
+        "award_1_y": 0,
+        "award_2_x": 0,
+        "award_2_y": 0,
+        "award_3_x": 0,
+        "award_3_y": 0,
+        "bonus_1_x": 0,
+        "bonus_1_y": 0,
+        "bonus_2_x": 0,
+        "bonus_2_y": 0,
+        "bonus_3_x": 0,
+        "bonus_3_y": 0,
+        # Center-to-center spacing per row, in px. 0 = auto (medal width + 1).
+        "award_spacing": 0,
+        "bonus_spacing": 0,
     },
     "character_aliases": deepcopy(characterAliases),
     "ui": {
@@ -2202,7 +2222,7 @@ class RibbonEngineApp:
         self.categorySections.append(section)
 
     def _addBadgeToggle(self, container) -> dict:
-        """Toggle + dropdown for the 'department badge replaces award medals' mode.
+        """Toggle + dropdown for the 'department badge replaces bonus medals' mode.
 
         Returns a dict {use_var, name_var, dropdown} so the medal section can
         wire the toggle into its enable/disable logic.
@@ -2218,9 +2238,10 @@ class RibbonEngineApp:
 
         row = ttk.Frame(container)
         row.pack(fill="x", pady=(2, 0))
+        self._badgeToggleRow = row
         ttk.Checkbutton(
             row,
-            text="Department badge (replaces award medals)",
+            text="Department badge (replaces bonus medals)",
             variable=self.useDepartmentBadgeVar,
             command=self._onBadgeToggleChanged,
         ).pack(anchor="w")
@@ -2242,19 +2263,18 @@ class RibbonEngineApp:
     def _onBadgeToggleChanged(self) -> None:
         """Toggle handler for the department-badge checkbox.
 
-        When the toggle turns ON, the left pocket is reserved for either
-        a single department badge or up to three overflow bonus medals,
-        so we clear every award-medal slot first to avoid the renderer
-        silently dropping them. Then `_applyBadgeAwardVisibility` adjusts
-        what's visible (hide award group, cap bonus to 3 dropdowns, show
-        the badge dropdown — or the inverse on toggle-off). Finally we
-        persist and re-render.
+        When the toggle turns ON, the bonus row (under the nametape) is
+        replaced by a single department badge, so we clear every bonus-medal
+        slot first to avoid the renderer silently dropping them under the
+        badge. Then `_applyBadgeAwardVisibility` adjusts what's visible (hide
+        the bonus group, show the badge dropdown — or the inverse on
+        toggle-off). Finally we persist and re-render.
         """
         self._captureHistory()
-        # Clear award medal slots when switching to badge mode so they don't
-        # silently render too.
+        # Clear bonus medal slots when switching to badge mode so they don't
+        # silently render under the badge that replaces them.
         if self.useDepartmentBadgeVar.get():
-            for v in getattr(self, "medalAwardVars", []):
+            for v in getattr(self, "medalBonusVars", []):
                 v.set("NONE")
         self._applyBadgeAwardVisibility()
         self.saveCurrentSettings()
@@ -2263,16 +2283,13 @@ class RibbonEngineApp:
     def _applyBadgeAwardVisibility(self) -> None:
         """Reconcile the medal-section layout with the department-badge state.
 
-        Two display modes:
-          * **Badge ON** — left pocket is dedicated to either a single
-            department badge or overflow bonus medals. We hide the entire
-            `Award medals` group, hide bonus combos beyond
-            `maxMedalsPerSide` (clearing their StringVars so stale picks
-            never leak into the render), and show the badge dropdown row.
-          * **Badge OFF** — restore the `Award medals` group above the
-            bonus group, show all `2 × maxMedalsPerSide` bonus combos,
-            hide the badge dropdown row, and reset its StringVar to
-            "NONE" so the renderer doesn't apply a stale badge.
+        The badge replaces the **bonus** row (under the nametape), so:
+          * **Badge ON** — hide the entire `Bonus medals` group (clearing its
+            StringVars so stale picks never leak into the render) and show the
+            badge dropdown row. The `Award medals` group is untouched.
+          * **Badge OFF** — restore the `Bonus medals` group, hide the badge
+            dropdown row, and reset its StringVar to "NONE" so the renderer
+            doesn't apply a stale badge.
 
         Idempotent and called from three places: initial section build,
         the toggle handler, and `clearAll`. All widget references are
@@ -2280,29 +2297,22 @@ class RibbonEngineApp:
         called during boot before `_addBadgeToggle` runs) no-op cleanly.
         """
         badgeOn = bool(getattr(self, "useDepartmentBadgeVar", tk.BooleanVar()).get())
-        group = getattr(self, "_awardMedalsGroup", None)
         bonus = getattr(self, "_bonusMedalsGroup", None)
-        if group is not None:
+        if bonus is not None:
             if badgeOn:
-                group.pack_forget()
+                bonus.pack_forget()
             else:
-                if bonus is not None:
-                    group.pack(fill="x", before=bonus)
+                # Keep the bonus group above the badge toggle row.
+                toggleRow = getattr(self, "_badgeToggleRow", None)
+                if toggleRow is not None:
+                    bonus.pack(fill="x", before=toggleRow)
                 else:
-                    group.pack(fill="x")
+                    bonus.pack(fill="x")
 
-        # Show only the first `maxMedalsPerSide` bonus slots when badge is on
-        # (right pocket only); show all when off (right + left pocket).
-        combos = getattr(self, "_bonusMedalCombos", [])
-        visibleCount = maxMedalsPerSide if badgeOn else len(combos)
-        for idx, combo in enumerate(combos):
-            if idx < visibleCount:
-                combo.pack(fill="x", padx=2, pady=1)
-            else:
-                combo.pack_forget()
-                # Clear hidden slots so they don't render.
-                if idx < len(getattr(self, "medalBonusVars", [])):
-                    self.medalBonusVars[idx].set("NONE")
+        # Clear bonus slots while the badge owns that row so they don't render.
+        if badgeOn:
+            for v in getattr(self, "medalBonusVars", []):
+                v.set("NONE")
 
         # Badge dropdown row only when toggle is on.
         badgeRow = getattr(self, "_badgeDropdownRow", None)
@@ -2315,17 +2325,18 @@ class RibbonEngineApp:
                     self.departmentBadgeVar.set("NONE")
 
     def _addMedalSlotsSection(self, parent, labelText: str, items: list[AssetItem]) -> None:
-        """N+2N slot dropdowns for award and bonus medals (profile-driven).
+        """Two mirrored slot groups of single-select dropdowns (profile-driven):
 
-        Builds two stacked groups of single-select dropdowns:
+          * `Award medals` — `maxMedalsPerSide` slots. Render as a centred row
+            UNDER the ribbons block (right side).
+          * `Bonus medals` — `maxMedalsPerSide` slots. Render as a centred row
+            UNDER the nametape (left side); replaced by the department badge
+            when that toggle is on.
 
-          * `Award medals` — `maxMedalsPerSide` slots, sourced from the
-            profile's `medals.award_names` list. These render in the
-            right-pocket center row.
-          * `Bonus medals` — `2 × maxMedalsPerSide` slots, sourced from
-            `medals.bonus_names`. The first `maxMedalsPerSide` fill the
-            right pocket above the awards; the remainder overflow into
-            the left pocket.
+        Both groups are sourced from the full medal pool (every PNG in awards/),
+        so any medal can sit in any of the 6 slots and new PNGs are pickable
+        without a profile edit. The two rows share one Y anchor and identical
+        spacing so a medal looks the same in either.
 
         Slot counts come straight from the engine profile, so growing
         the medal pool is a JSON-only change. Duplicates across slots
@@ -2355,8 +2366,14 @@ class RibbonEngineApp:
             self.checkboxVars[item.name] = iv
             intVars[item.name] = iv
 
-        awardNames = sorted(item.name for item in items if item.name in awardMedalNames)
-        bonusNames = sorted(item.name for item in items if item.name in bonusMedalNames)
+        # Any medal can go in any slot: both the award row (under the ribbons)
+        # and the bonus row (under the nametape) are populated from the full
+        # medal pool. The award/bonus split is purely positional now — "bonus"
+        # is just an overflow set of award slots. Dropping a new PNG into
+        # assets/<faction>/awards/ makes it pickable in either row immediately.
+        allNames = sorted(item.name for item in items)
+        awardNames = allNames
+        bonusNames = allNames
 
         self.medalAwardVars: list[tk.StringVar] = []
         self.medalBonusVars: list[tk.StringVar] = []
@@ -2378,9 +2395,9 @@ class RibbonEngineApp:
             return group
 
         self._bonusMedalCombos: list[ttk.Combobox] = []
-        self._awardMedalsGroup = buildGroup("Award medals", awardNames, self.medalAwardVars, maxMedalsPerSide)
-        # Bonus medals get double the slots (3 right + 3 left in the visual stack).
-        self._bonusMedalsGroup = buildGroup("Bonus medals", bonusNames, self.medalBonusVars, maxMedalsPerSide * 2, self._bonusMedalCombos)
+        self._awardMedalsGroup = buildGroup("Award medals (under ribbons)", awardNames, self.medalAwardVars, maxMedalsPerSide)
+        # Bonus row mirrors the award row under the nametape; same slot count.
+        self._bonusMedalsGroup = buildGroup("Bonus medals (under nametape)", bonusNames, self.medalBonusVars, maxMedalsPerSide, self._bonusMedalCombos)
 
         # Department badge toggle goes at the end of the awards section.
         self._addBadgeToggle(content)
@@ -4551,6 +4568,49 @@ class RibbonEngineApp:
         ]):
             addIntRow(rowsTab, i, label, ["ribbon_rows", key])
 
+        # Medal offsets tab — per-slot (x, y) nudges added to each medal's
+        # auto-computed pocket position. 0 leaves the auto layout unchanged.
+        medalTab = ttk.Frame(notebook, padding=10)
+        notebook.add(medalTab, text="Medal offsets")
+        ttk.Label(medalTab, text="Slot").grid(row=0, column=0, sticky="w")
+        ttk.Label(medalTab, text="X").grid(row=0, column=1, sticky="w")
+        ttk.Label(medalTab, text="Y").grid(row=0, column=2, sticky="w")
+        medalSlotRows = [
+            ("Award 1", "award_1"),
+            ("Award 2", "award_2"),
+            ("Award 3", "award_3"),
+            ("Bonus 1", "bonus_1"),
+            ("Bonus 2", "bonus_2"),
+            ("Bonus 3", "bonus_3"),
+        ]
+        for i, (label, slot) in enumerate(medalSlotRows, start=1):
+            ttk.Label(medalTab, text=label).grid(row=i, column=0, sticky="w", padx=4, pady=2)
+            for col, axis in ((1, "x"), (2, "y")):
+                key = f"{slot}_{axis}"
+                val = (profile.get("medal_slot_offsets") or {}).get(key, 0)
+                v = tk.IntVar(value=int(val) if isinstance(val, (int, float)) else 0)
+                intVars[("medal_slot_offsets", key)] = v
+                tk.Spinbox(medalTab, from_=-999, to=999, textvariable=v, width=6).grid(
+                    row=i, column=col, padx=4
+                )
+
+        # Per-row medal spacing (center-to-center, px). 0 = auto (medal width).
+        spacingHeaderRow = len(medalSlotRows) + 1
+        ttk.Label(medalTab, text="Spacing (0 = auto)").grid(
+            row=spacingHeaderRow, column=0, columnspan=3, sticky="w", padx=4, pady=(10, 2)
+        )
+        for j, (label, key) in enumerate(
+            [("Award row spacing", "award_spacing"), ("Bonus row spacing", "bonus_spacing")]
+        ):
+            r = spacingHeaderRow + 1 + j
+            ttk.Label(medalTab, text=label).grid(row=r, column=0, sticky="w", padx=4, pady=2)
+            val = (profile.get("medal_slot_offsets") or {}).get(key, 0)
+            v = tk.IntVar(value=int(val) if isinstance(val, (int, float)) else 0)
+            intVars[("medal_slot_offsets", key)] = v
+            tk.Spinbox(medalTab, from_=0, to=999, textvariable=v, width=6).grid(
+                row=r, column=1, padx=4
+            )
+
         # Raw JSON tab
         rawTab = ttk.Frame(notebook, padding=10)
         notebook.add(rawTab, text="Raw JSON")
@@ -4603,6 +4663,8 @@ class RibbonEngineApp:
                     out.setdefault("offsets", {})[path[1]] = value
                 elif path[0] == "ribbon_rows":
                     out.setdefault("ribbon_rows", {})[path[1]] = value
+                elif path[0] == "medal_slot_offsets":
+                    out.setdefault("medal_slot_offsets", {})[path[1]] = value
                 else:
                     out[path[0]] = value
             return out

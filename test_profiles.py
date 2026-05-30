@@ -71,6 +71,39 @@ class FromDictTests(unittest.TestCase):
         # "bogus" dropped, legal tokens kept.
         self.assertEqual(lp.medal_multi_order, ("left", "right"))
 
+    def test_medal_slot_offsets_parsed(self):
+        lp = LayoutProfile.from_dict(
+            {
+                "max_medals_per_side": 3,
+                "medal_slot_offsets": {
+                    "award_1_x": 2,
+                    "award_1_y": -1,
+                    "award_3_x": 5,
+                    "bonus_2_y": 4,
+                },
+            }
+        )
+        # 0-indexed tuples sized to max_medals_per_side; missing values are 0.
+        self.assertEqual(lp.award_slot_offsets, ((2, -1), (0, 0), (5, 0)))
+        self.assertEqual(lp.bonus_slot_offsets, ((0, 0), (0, 4), (0, 0)))
+
+    def test_medal_slot_offsets_absent_is_all_zero(self):
+        lp = LayoutProfile.from_dict({"max_medals_per_side": 3})
+        self.assertEqual(lp.award_slot_offsets, ((0, 0), (0, 0), (0, 0)))
+        self.assertEqual(lp.bonus_slot_offsets, ((0, 0), (0, 0), (0, 0)))
+
+    def test_row_spacing_parsed(self):
+        lp = LayoutProfile.from_dict(
+            {"medal_slot_offsets": {"award_spacing": 14, "bonus_spacing": 9}}
+        )
+        self.assertEqual(lp.award_row_spacing, 14)
+        self.assertEqual(lp.bonus_row_spacing, 9)
+
+    def test_row_spacing_defaults_zero_and_clamps_negative(self):
+        lp = LayoutProfile.from_dict({"medal_slot_offsets": {"award_spacing": -5}})
+        self.assertEqual(lp.award_row_spacing, 0)  # negative clamped to 0 (auto)
+        self.assertEqual(lp.bonus_row_spacing, 0)  # absent -> 0 (auto)
+
 
 class NorthwestRegressionTests(unittest.TestCase):
     """Guards against the 'everything renders in the top-left' bug."""

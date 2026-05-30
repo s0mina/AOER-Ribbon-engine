@@ -129,15 +129,37 @@ precedence for the slots you've manually filled.
 
 ### Picking medals
 
-The **Awards** section has dropdowns:
+The **Awards** section has two mirrored medal rows, each with up to 3
+slots:
 
-- **Award medals** — up to 3, sit in the center of the right pocket.
-- **Bonus medals** — up to 6, stack above and to the left of the
-  awards. Duplicates allowed (triple Diamond is legal).
-- **Department badge** (checkbox) — if you tick it, the **left pocket
-  switches** to either a single department badge (Moderation, Logistics,
-  etc.) or up to 3 overflow bonus medals. Award medals are hidden in
-  this mode because they share the left pocket.
+- **Award medals (under ribbons)** — up to 3, render in a row centered
+  under the **ribbons** (right side).
+- **Bonus medals (under nametape)** — up to 3, render in a row centered
+  under the **nametape** (left side). Think of these as overflow awards.
+- Both dropdowns list the **full medal pool** — any medal can go in any
+  slot, in either row. Duplicates are allowed (triple Diamond is legal).
+- Both rows share the same **Y anchor** (the `sacks` row) and are simple
+  mirror images of each other, so a medal looks identical no matter which
+  pocket it sits in.
+- **Department badge** (checkbox) — ticking it **replaces the bonus row**
+  with a single department badge (Moderation, Logistics, etc.) under the
+  nametape. The award row is unaffected.
+
+By default each row auto-spaces its medals (spacing = widest medal + 1px)
+so nothing stacks. To override the geometry, use **Tools → Profile
+Editor → Medal offsets**:
+
+- **Award/Bonus 1–3 X/Y** — a per-slot nudge *added* to that slot's
+  auto-computed position. `0` means "leave it where auto put it".
+- **Award/Bonus row spacing** — forces an exact center-to-center spacing
+  for that row. `0` means "auto" (width-based, the default).
+
+> **Adding a medal:** drop the PNG into `assets/<FACTION>/awards/` (or
+> `assets/AOER/awards/` for corp-wide) and it shows up in **both** medal
+> dropdowns automatically — no profile edit needed. There's no longer a
+> separate "bonus names" list; any medal can be placed in either row from
+> the dropdowns. Department badges come from the special-badges pool, not
+> `awards/`.
 
 ### Recolor controls (Settings… button)
 

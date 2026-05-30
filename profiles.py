@@ -111,6 +111,19 @@ class LayoutProfile:
     # canonical medalSingleOrder / medalMultiOrder globals in ribbonengine.py.
     medal_single_order: tuple[str, ...] = ("middle", "left", "right")
     medal_multi_order: tuple[str, ...] = ("left", "middle", "right")
+    # Per-slot (x, y) nudges ADDED to each medal's auto-computed pocket
+    # position. Index 0 is the first slot. Empty tuple = no nudge anywhere
+    # (today's behavior). award_* applies to the award row (under the ribbons);
+    # bonus_* applies to the bonus row (under the nametape). Parsed from the
+    # flat ``medal_slot_offsets`` block (award_1_x, award_1_y, …, bonus_3_y).
+    award_slot_offsets: tuple[tuple[int, int], ...] = ()
+    bonus_slot_offsets: tuple[tuple[int, int], ...] = ()
+    # Horizontal spacing between adjacent medals in each row, in pixels. 0 means
+    # "auto": the renderer spreads by the widest medal (+1px) so nothing stacks.
+    # A value > 0 forces that exact center-to-center spacing. Parsed from
+    # ``medal_slot_offsets`` keys ``award_spacing`` / ``bonus_spacing``.
+    award_row_spacing: int = 0
+    bonus_row_spacing: int = 0
 
     @classmethod
     def from_dict(cls, profile: dict) -> "LayoutProfile":
@@ -139,6 +152,19 @@ class LayoutProfile:
             single = _parse_order(medals.get("single_order"), single)
             multi = _parse_order(medals.get("multi_order"), multi)
 
+        # Per-slot medal nudges. Both groups are sized to the medal-per-side
+        # cap so a slot's offset lines up with its slot index at render time.
+        max_medals = max(
+            1, _safe_int(profile.get("max_medals_per_side"), defaults.max_medals_per_side)
+        )
+        slot_offsets = profile.get("medal_slot_offsets", {})
+        if not isinstance(slot_offsets, dict):
+            slot_offsets = {}
+        award_off = _parse_slot_offsets(slot_offsets, "award", max_medals)
+        bonus_off = _parse_slot_offsets(slot_offsets, "bonus", max_medals)
+        award_spacing = max(0, _safe_int(slot_offsets.get("award_spacing"), 0))
+        bonus_spacing = max(0, _safe_int(slot_offsets.get("bonus_spacing"), 0))
+
         return cls(
             part_coords=_parse_part_coords(
                 profile.get("part_coords"), dict(DEFAULT_PART_COORDS)
@@ -147,9 +173,7 @@ class LayoutProfile:
             ribbon_area_width=max(
                 1, _safe_int(profile.get("ribbon_area_width"), defaults.ribbon_area_width)
             ),
-            max_medals_per_side=max(
-                1, _safe_int(profile.get("max_medals_per_side"), defaults.max_medals_per_side)
-            ),
+            max_medals_per_side=max_medals,
             default_nameplate_width=max(
                 1,
                 _safe_int(
@@ -194,6 +218,10 @@ class LayoutProfile:
             ),
             medal_single_order=single,
             medal_multi_order=multi,
+            award_slot_offsets=award_off,
+            bonus_slot_offsets=bonus_off,
+            award_row_spacing=award_spacing,
+            bonus_row_spacing=bonus_spacing,
         )
 
     def with_part_coords(self, coords: dict[str, tuple[int, int]]) -> "LayoutProfile":
@@ -227,3 +255,21 @@ def _parse_order(raw, default: tuple[str, ...]) -> tuple[str, ...]:
     legal = {"left", "middle", "right"}
     cleaned = tuple(tok for tok in raw if isinstance(tok, str) and tok in legal)
     return cleaned or default
+
+
+def _parse_slot_offsets(raw, prefix: str, count: int) -> tuple[tuple[int, int], ...]:
+    """Read ``{prefix}_{n}_x`` / ``{prefix}_{n}_y`` pairs from a flat dict.
+
+    Slots are numbered from 1 in the JSON (``award_1_x``) but returned as a
+    0-indexed tuple so the renderer can index by slot position. A missing or
+    malformed value falls back to 0, so an absent block yields all-zero nudges
+    (i.e. no change to the auto-layout).
+    """
+    if not isinstance(raw, dict):
+        raw = {}
+    out: list[tuple[int, int]] = []
+    for n in range(1, count + 1):
+        x = _safe_int(raw.get(f"{prefix}_{n}_x"), 0)
+        y = _safe_int(raw.get(f"{prefix}_{n}_y"), 0)
+        out.append((x, y))
+    return tuple(out)

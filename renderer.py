@@ -226,9 +226,15 @@ class RibbonRenderer:
             def selectedItems(category: str) -> list:
                 return [item for item in self.groups[category] if item.name in selectedNames]
 
-            # Awards / Bonus medals (pocket layout). Explicit slot lists allow
-            # duplicates (e.g. triple Diamond Medal); otherwise fall back to the
-            # checkbox-derived selection which dedupes by name.
+            # Award / Bonus medals. There are two mirrored medal rows that
+            # share one Y anchor and identical pocket geometry, so a medal
+            # looks the same in either row:
+            #   * Award row  -> centred under the RIBBONS block (right side).
+            #   * Bonus row  -> centred under the NAMETAPE (left side); the
+            #     department badge, when enabled, replaces this row.
+            # Any medal can sit in any of the 6 slots ("bonus" is really just
+            # an overflow set of awards). Explicit slot lists allow duplicates
+            # (e.g. triple Diamond Medal); the checkbox-derived fallback dedupes.
             if awardSlots is not None or bonusSlots is not None:
                 medalByName = {it.name: it for it in self.groups["sacks"]}
                 awardMedals = [medalByName[n] for n in (awardSlots or []) if n and n in medalByName]
@@ -238,85 +244,84 @@ class RibbonRenderer:
                 awardMedals = [item for item in selectedMedals if item.name in self.award_medal_names]
                 bonusMedals = [item for item in selectedMedals if item.name in self.bonus_medal_names]
 
-            # Left-pocket priority: badge > overflow bonus medals > award medals.
-            # All three compete for the same left-pocket slots; the higher
-            # priority wins and silently overrides the lower.
+            # The department badge takes over the bonus (nametape) row.
             useBadge = bool(departmentBadge) and departmentBadge != "NONE"
-            hasOverflowBonus = len(bonusMedals) > lp.max_medals_per_side
-            if useBadge or hasOverflowBonus:
-                awardMedals = []
+            if useBadge:
+                bonusMedals = []
 
+            # Cap each row at the per-side limit.
             if len(awardMedals) > lp.max_medals_per_side:
                 if errorCallback:
                     errorCallback(f"Only {lp.max_medals_per_side} award medals can be applied; extra selections are ignored.")
                 awardMedals = awardMedals[:lp.max_medals_per_side]
-            # Bonus medals: first `max_medals_per_side` go in the pocket row, the
-            # next set stacks in a row above it. Cap total at 2× per side.
-            bonusCap = lp.max_medals_per_side * 2
-            if len(bonusMedals) > bonusCap:
+            if len(bonusMedals) > lp.max_medals_per_side:
                 if errorCallback:
-                    errorCallback(f"Only {bonusCap} bonus medals can be applied; extra selections are ignored.")
-                bonusMedals = bonusMedals[:bonusCap]
+                    errorCallback(f"Only {lp.max_medals_per_side} bonus medals can be applied; extra selections are ignored.")
+                bonusMedals = bonusMedals[:lp.max_medals_per_side]
 
             if awardMedals or bonusMedals or useBadge:
-                nametapeCenterX = lp.part_coords["nametape"][0] + (nameplateWidth // 2)
-                rightCenterX = nametapeCenterX + lp.pocket_right_offset
+                nameplateCenterX = lp.part_coords["nametape"][0] + (nameplateWidth // 2)
+                ribbonsCenterX = lp.part_coords["ribbons"][0] + (lp.ribbon_area_width // 2)
                 yTop = lp.part_coords["sacks"][1]
 
-                leftSlotX = nametapeCenterX + lp.pocket_x_offset
-                rightSlotX = rightCenterX + lp.pocket_x_offset
-
-                pocketCentersLeft = self._buildPocketCenters(leftSlotX, len(awardMedals))
-                # Right pocket = first 3 bonus medals. Overflow 4–6 jumps to
-                # the left pocket (replacing award medals there).
-                pocketRowBonus = bonusMedals[:lp.max_medals_per_side]
-                overflowBonus = bonusMedals[lp.max_medals_per_side:]
-                pocketCentersRight = self._buildPocketCenters(rightSlotX, len(pocketRowBonus))
-                overflowCentersLeft = self._buildPocketCenters(leftSlotX, len(overflowBonus))
+                # Bonus row under the nametape (left); award row under the
+                # ribbons (right). pocket_right_offset nudges the right row.
+                bonusBaseX = nameplateCenterX + lp.pocket_x_offset
+                awardBaseX = ribbonsCenterX + lp.pocket_x_offset + lp.pocket_right_offset
 
                 # When explicit slot lists are provided, allow duplicates (the
                 # user picked the same medal in multiple slots intentionally).
                 dedupe = awardSlots is None and bonusSlots is None
-                for item, cx in zip(awardMedals, pocketCentersLeft):
-                    piece = safeLoad(item)
-                    if piece is None:
-                        continue
-                    w, _ = piece.size
-                    if not dedupe or item.name not in usedSlots["sacks"]:
-                        _record_paste(baseImg, piece, (int(cx - w / 2), yTop), item.name, "sacks")
-                        usedSlots["sacks"].add(item.name)
 
-                for item, cx in zip(pocketRowBonus, pocketCentersRight):
-                    piece = safeLoad(item)
-                    if piece is None:
-                        continue
-                    w, _ = piece.size
-                    if not dedupe or item.name not in usedSlots["sacks"]:
-                        _record_paste(baseImg, piece, (int(cx - w / 2), yTop), item.name, "sacks")
-                        usedSlots["sacks"].add(item.name)
+                def slotOffset(offsets, idx):
+                    # Per-slot (x, y) nudge added to the auto position; 0,0 when
+                    # the profile defines no offset for this slot index.
+                    return offsets[idx] if idx < len(offsets) else (0, 0)
 
-                # Overflow bonus medals render at the LEFT pocket (same Y),
-                # replacing award medals. Skipped when badge mode is on.
-                if overflowBonus and not useBadge:
-                    for item, cx in zip(overflowBonus, overflowCentersLeft):
+                def rowSpacing(items, override):
+                    # Spacing precedence: explicit per-row spacing > legacy
+                    # global pocket_col_spacing > auto (widest medal + 1px).
+                    # Auto is what stops medals stacking when nothing is set.
+                    if override > 0:
+                        return override
+                    if lp.pocket_col_spacing > 0:
+                        return lp.pocket_col_spacing
+                    widths = []
+                    for it in items:
+                        piece = safeLoad(it)
+                        if piece is not None:
+                            widths.append(piece.size[0])
+                    return (max(widths) + 1) if widths else 1
+
+                def rowCenters(baseX, count, spacing):
+                    # `count` slots centred on baseX, laid out left-to-right.
+                    return [int(baseX + (i - (count - 1) / 2) * spacing) for i in range(count)]
+
+                def pasteRow(items, baseX, offsets, spacingOverride):
+                    spacing = rowSpacing(items, spacingOverride)
+                    centers = rowCenters(baseX, len(items), spacing)
+                    for i, (item, cx) in enumerate(zip(items, centers)):
                         piece = safeLoad(item)
                         if piece is None:
                             continue
+                        if dedupe and item.name in usedSlots["sacks"]:
+                            continue
                         w, _ = piece.size
-                        if not dedupe or item.name not in usedSlots["sacks"]:
-                            _record_paste(baseImg, piece, (int(cx - w / 2), yTop), item.name, "sacks")
-                            usedSlots["sacks"].add(item.name)
+                        ox, oy = slotOffset(offsets, i)
+                        _record_paste(baseImg, piece, (int(cx - w / 2) + ox, yTop + oy), item.name, "sacks")
+                        usedSlots["sacks"].add(item.name)
 
-                # Department badge at left-pocket center (highest left priority).
+                pasteRow(awardMedals, awardBaseX, lp.award_slot_offsets, lp.award_row_spacing)
+                pasteRow(bonusMedals, bonusBaseX, lp.bonus_slot_offsets, lp.bonus_row_spacing)
+
+                # Department badge occupies the bonus (nametape) row centre.
                 if useBadge:
                     badgeItem = next((it for it in self.groups.get("spbadge", []) if it.name == departmentBadge), None)
                     if badgeItem is not None:
                         piece = safeLoad(badgeItem)
                         if piece is not None:
                             w, _ = piece.size
-                            badgeCenters = self._buildPocketCenters(leftSlotX, 1)
-                            cx = badgeCenters[0] if badgeCenters else leftSlotX
-                            _record_paste(baseImg, piece, (int(cx - w / 2), yTop), badgeItem.name, "sacks")
+                            _record_paste(baseImg, piece, (int(bonusBaseX - w / 2), yTop), badgeItem.name, "sacks")
 
             # Gorgets
             for item in self.groups["gorget"]:
