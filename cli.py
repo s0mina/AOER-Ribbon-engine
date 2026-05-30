@@ -147,8 +147,13 @@ def cmd_export_loadout(args) -> int:
     except Exception:
         pass
 
+    # Load the active engine profile so the renderer gets real (non-zero) part
+    # coordinates instead of the bootstrap defaults — otherwise the composite
+    # would render everything in the top-left corner (the "northwest" bug).
+    engine.applyProfile(engine.ensureProfileFile())
+
     groups = engine.loadRibbonGroups()
-    renderer = engine.RibbonRenderer(groups)
+    renderer = engine.makeRenderer(groups)
     ribbons = set(args.ribbons or [])
     nametape = args.nametape or ""
     image, _, _ = renderer.buildImage(

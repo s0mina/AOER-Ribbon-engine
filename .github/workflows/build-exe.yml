@@ -10,6 +10,8 @@ on:
   push:
     branches: [main, master]
     tags: ["v*"]
+  pull_request:
+    branches: [main, master]
   workflow_dispatch:
 
 # Allow the workflow's token to create/upload a GitHub Release. Without this,
@@ -18,7 +20,32 @@ permissions:
   contents: write
 
 jobs:
+  # Fast, headless logic tests. Runs on every push + PR. The Windows .exe build
+  # below depends on this job, so a red test blocks the build AND the release.
+  # Keep these tests display-free: they must not import ribbonengine.py (which
+  # imports tkinter at module top). factions.py / renderer.py / profiles.py are
+  # all importable without a display.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -m unittest discover -p "test_*.py" -v
+
   build:
+    needs: test
     runs-on: windows-latest
 
     steps:
