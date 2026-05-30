@@ -22,6 +22,11 @@ Python required. On Mac/Linux the first launch takes ~30 seconds (it's
 installing what it needs), then opens instantly. **That's it — you can
 stop reading here.**
 
+> **Updating (Windows):** you only download manually **once**. From then on
+> the `.exe` checks GitHub on launch and, when a newer release exists, offers
+> to download and install it for you — your factions, loadouts, and settings
+> are left untouched. You can also trigger it from **Help → Check for Updates…**.
+
 If the short version didn't work, read on.
 
 ---

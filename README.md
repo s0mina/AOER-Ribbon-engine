@@ -35,8 +35,11 @@ For the headless command-line renderer, see [CLI.md](CLI.md).
 Ribbon Engine v3/
 ├── ribbonengine.py          # The main app — what the GUI launcher runs
 ├── factions.py              # Faction registry + recolor pipeline (don't run directly)
+├── renderer.py              # Display-free PIL compositing core (headless-testable)
+├── profiles.py              # LayoutProfile — the renderer's view of an Engine Profile
+├── updater.py               # Self-update logic (checks Releases, stages, applies)
 ├── cli.py                   # Headless renderer for scripts/batches
-├── test_factions.py         # Unit tests
+├── test_*.py                # Unit tests (factions, renderer, profiles, updater)
 ├── run.sh                   # Mac/Linux launcher — `./run.sh` from a terminal
 ├── requirements.txt         # What pip installs (Pillow + NumPy)
 │
@@ -52,6 +55,7 @@ Ribbon Engine v3/
 │   │   ├── awards/          #     Medals (never recolored)
 │   │   └── commendations/   #     Gorgets, badges, commendations (never recolored)
 │   └── <FACTION>/           #   One tree per faction. Same three subfolders.
+│       ├── shirttemplate.png  #   Optional: shirt preview shown when this faction is active
 │       ├── ribbons/
 │       ├── awards/
 │       └── commendations/
@@ -86,6 +90,27 @@ installed, the short version is:
 > Actions on every release tag, so it always matches the code here.
 > Developers who want to run from source on Windows can use the manual
 > `python ribbonengine.py` steps in [INSTALLATION.md](INSTALLATION.md).
+
+### Staying up to date (Windows `.exe`)
+
+The packaged Windows build **checks for updates on its own**. On launch it
+quietly asks GitHub whether a newer release exists; if one does, it pops up an
+**Update Available** dialog showing the new version and its changelog. Click
+**Update Now** and the engine downloads the new build, installs it, and
+relaunches — no manual unzip, no re-copying folders.
+
+- **Your data is safe.** The updater refreshes only the program files. Your
+  `factions/`, `loadouts/`, `Characters/`, `Engine Profiles/`, `assets/`, and
+  `settings.json` are explicitly excluded from the copy, so nothing you've
+  customized is touched.
+- **You're in control.** The dialog has **Later** (ask again next launch),
+  **Skip This Version** (don't nag about this one again), and **Release Page**
+  (open the download in your browser instead).
+- **Check manually any time** via **Help → Check for Updates…**, and see your
+  current version under **Help → About**.
+- **Turn it off** by setting `"check_updates_on_startup": false` in
+  `settings.json`. (Auto-update only runs in the packaged `.exe`; running from
+  source is never modified.)
 
 ## Using the engine
 
@@ -128,6 +153,33 @@ The defaults (border only) keep the designer's interior artwork intact
 and just lock the outer ring. Flip stripe and base on if you want the
 engine to fully normalize a ribbon to the faction's three palette
 colors.
+
+### Shirt preview overlay
+
+Tick **Show shirt preview** to drop your ribbon stack onto a mockup of the
+uniform shirt so you can judge placement in context. This is preview-only — it
+never changes the exported 128×128 PNG.
+
+The shirt **follows the faction automatically.** When you switch factions the
+engine looks inside `assets/<FACTION>/` for a shirt image and swaps the preview
+to it:
+
+1. It prefers a file named exactly **`shirttemplate.png`**.
+2. Failing that, it uses the **first top-level PNG** in that faction's folder,
+   so a faction can ship any single shirt image under any name.
+3. If the faction has no top-level PNG, the preview keeps the profile/ANRO
+   default — so the stock install is unchanged.
+
+To give a faction its own uniform, drop a `shirttemplate.png` into
+`assets/<FACTION>/` (alongside the `ribbons/`, `awards/`, `commendations/`
+folders — **not** inside them). It ships in the release zip automatically. You
+can also still pick any template manually from the **Shirt preview** dropdown,
+or drop extra PNGs into the `templates/` folder to make them selectable for
+every faction.
+
+> The ribbons are cropped onto the chest using the profile's `front_crop_box` /
+> `template_size`. If a faction's shirt is framed differently from the reference
+> and the ribbons land off the pocket, tune those values in the Engine Profile.
 
 ### Themes
 
@@ -251,7 +303,9 @@ Drop the PNG into `assets/AOER/<type>/`, where `<type>` is `ribbons`,
 Create `factions/<KEY>.json` (see [FACTIONS.md](FACTIONS.md) for the
 schema), then create `assets/<KEY>/ribbons/`, `…/awards/`, and
 `…/commendations/` and populate them. The faction shows up in the
-dropdown on next launch.
+dropdown on next launch. Optionally drop a `shirttemplate.png` directly in
+`assets/<KEY>/` to give the faction its own shirt-preview overlay (see
+[Shirt preview overlay](#shirt-preview-overlay)).
 
 ### A different canvas layout (medal positions, ribbon rows)
 
@@ -397,11 +451,14 @@ because the files aren't on their machine.
 ## Tests
 
 ```
-python -m unittest test_factions
+python -m unittest discover -p "test_*.py"
 ```
 
-Should print `OK` after 14 tests. If it doesn't, something is wrong
-with the install — check [INSTALLATION.md](INSTALLATION.md).
+Should print `OK` after the full suite (faction recolor, the headless
+renderer, layout profiles, and the self-updater). These are display-free,
+so they run on a headless box and in CI — a red test blocks the `.exe`
+build and release. If they don't pass, something is wrong with the install
+— check [INSTALLATION.md](INSTALLATION.md).
 
 ## Keyboard shortcuts
 

@@ -8,8 +8,10 @@ import sys
 import shutil
 import subprocess
 import tempfile
+import threading
 import tkinter as tk
 import urllib.request
+import webbrowser
 import zipfile
 from copy import deepcopy
 from dataclasses import dataclass
@@ -27,6 +29,7 @@ from factions import (
 )
 from profiles import LayoutProfile
 from renderer import RibbonRenderer
+import updater
 
 
 # Image/layout constants
@@ -157,6 +160,10 @@ loadoutsDir = os.path.join(baseDir, "loadouts")
 # custom_offsets}. v2 adds awards/bonuses/department_badge/manual_slots and
 # the profile key.
 METADATA_SCHEMA_VERSION = 2
+
+# The app's own release version, compared against the latest GitHub Release tag
+# by the self-updater. Keep this in lock-step with the pushed ``vX.Y`` tag.
+APP_VERSION = "1.3"
 
 
 class _Tooltip:
@@ -845,6 +852,10 @@ def ensureSettingsDefaults(settings: dict) -> dict:
     data.setdefault("preview_scale", 1.0)
     data.setdefault("only_show_selected", False)
     data.setdefault("preview_overlay", False)
+    # Self-updater: check Releases on startup (frozen builds only), and remember
+    # a version the user chose to skip so we don't nag about it again.
+    data.setdefault("check_updates_on_startup", True)
+    data.setdefault("skip_update_version", "")
     return data
 
 
@@ -1346,8 +1357,14 @@ class RibbonEngineApp:
         }
         self.profileVar = tk.StringVar(master=self.root, value=self.profileName)
         self.factionVar = tk.StringVar(master=self.root, value=self.activeFactionKey)
+        # Shirt-preview source priority on startup: the active faction's own
+        # template (assets/<faction>/) first so the overlay matches the faction,
+        # then a saved manual pick, then the profile shirt, then the ANRO default.
+        factionShirt = self._factionShirtPath(self.activeFactionKey)
         savedOverlay = str(self.settingsData.get("overlay_template", "") or "").strip()
-        if savedOverlay and os.path.exists(savedOverlay):
+        if factionShirt:
+            self.overlaySourcePath = factionShirt
+        elif savedOverlay and os.path.exists(savedOverlay):
             self.overlaySourcePath = savedOverlay
         else:
             self.overlaySourcePath = self._resolveProfileShirtPath(profileSelectedShirt)
@@ -1381,6 +1398,7 @@ class RibbonEngineApp:
         self.clearHoverPreview()
         self._buildMenuBar()
         self._enableDragAndDrop()
+        self._maybeAutoCheckUpdates()
 
     def _configureStyle(self) -> None:
         style = ttk.Style(self.root)
@@ -1729,6 +1747,42 @@ class RibbonEngineApp:
             return path
         return os.path.join(baseDir, path)
 
+    def _factionShirtPath(self, factionKey: str) -> str:
+        """Return the faction's own shirt-preview PNG, or '' if it has none.
+
+        Looks at the *top level* of ``assets/<faction>/`` (not the ribbons/
+        awards/commendations subdirs). Prefers a file literally named
+        ``shirttemplate.png``; otherwise falls back to the first top-level PNG,
+        so a faction can ship any single shirt image and have it picked up.
+        """
+        if not factionKey:
+            return ""
+        facDir = os.path.join(assetsRoot, factionKey)
+        if not os.path.isdir(facDir):
+            return ""
+        preferred = os.path.join(facDir, "shirttemplate.png")
+        if os.path.isfile(preferred):
+            return preferred
+        for fn in sorted(os.listdir(facDir), key=str.lower):
+            full = os.path.join(facDir, fn)
+            if fn.lower().endswith(".png") and os.path.isfile(full):
+                return full
+        return ""
+
+    def _applyFactionShirt(self) -> None:
+        """Point the shirt preview at the active faction's template, if it has one.
+
+        Faction-driven shirt wins over the profile/ANRO default so the overlay
+        tracks whatever faction is selected. Factions with no top-level PNG keep
+        the current shirt, so the default install still shows the ANRO mockup.
+        """
+        shirt = self._factionShirtPath(self.activeFactionKey)
+        if not shirt:
+            return
+        self.overlaySourcePath = shirt
+        self.updateOverlaySourceLabel()
+        self._refreshOverlayTemplateChoices()
+
     def refreshProfileChoices(self) -> None:
         names = listProfileNames()
         self.profileCombo["values"] = names
@@ -1749,6 +1803,11 @@ class RibbonEngineApp:
             self.overlaySourcePath = profileShirt
         else:
             self.overlaySourcePath = previewOverlayPath if os.path.exists(previewOverlayPath) else ""
+        # A faction's own shirt template (assets/<faction>/) takes priority over
+        # the profile/ANRO default so the preview tracks the selected faction.
+        factionShirt = self._factionShirtPath(self.activeFactionKey)
+        if factionShirt:
+            self.overlaySourcePath = factionShirt
         self.updateOverlaySourceLabel()
 
         try:
@@ -1977,6 +2036,10 @@ class RibbonEngineApp:
         setActiveFaction(chosen)
         self.activeFactionKey = chosen
         self._updateFactionPaletteLabel()
+        # Swap the shirt preview to this faction's template (if it ships one).
+        # Done before the profile-bound branch can early-return so the shirt
+        # tracks the faction regardless of which path we take below.
+        self._applyFactionShirt()
         # Loadout thumbnails are recolored per-faction; bust the cache so the
         # next loadout dialog repaints them in the new palette.
         if hasattr(self, "_loadoutThumbCache"):
@@ -2699,6 +2762,11 @@ class RibbonEngineApp:
                 )
         else:
             helpMenu.add_command(label="(no .md files found)", state="disabled")
+        helpMenu.add_separator()
+        helpMenu.add_command(
+            label="Check for Updates…", command=lambda: self._checkForUpdates(silent=False)
+        )
+        helpMenu.add_command(label=f"About (v{APP_VERSION})", command=self._showAbout)
         menubar.add_cascade(label="Help", menu=helpMenu)
 
         self.root.config(menu=menubar)
@@ -5767,6 +5835,198 @@ class RibbonEngineApp:
             self.labelPreview.pack(pady=10)
             self.togglePreviewBtn.config(text="Hide")
             self.previewVisible = True
+
+    # ----- Self-update --------------------------------------------------
+    def _maybeAutoCheckUpdates(self) -> None:
+        """On a packaged build, kick off a silent background update check.
+
+        Only frozen (PyInstaller) builds can self-update — running from source
+        has no .exe to replace — so the check is gated on ``sys.frozen``. The
+        user can also turn it off in settings. Scheduled via ``after`` so it
+        never blocks the first paint.
+        """
+        if not getattr(sys, "frozen", False):
+            return
+        if not self.settingsData.get("check_updates_on_startup", True):
+            return
+        self.root.after(1500, lambda: self._checkForUpdates(silent=True))
+
+    def _checkForUpdates(self, silent: bool = False) -> None:
+        """Hit GitHub Releases off the UI thread, then marshal the result back.
+
+        ``silent`` suppresses the "you're up to date" / error dialogs for the
+        automatic startup check, so a flaky network never nags the user.
+        """
+        def worker():
+            try:
+                info = updater.check_for_update(APP_VERSION)
+                self.root.after(0, lambda: self._onUpdateCheckResult(info, silent))
+            except Exception as exc:  # network/parse failure — non-fatal
+                self.root.after(0, lambda e=exc: self._onUpdateCheckError(e, silent))
+
+        if not silent:
+            self.setStatus("Checking for updates…")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _onUpdateCheckError(self, exc: Exception, silent: bool) -> None:
+        if silent:
+            return
+        self.setStatus("")
+        messagebox.showerror(
+            "Check for Updates",
+            f"Could not check for updates:\n{exc}",
+            parent=self.root,
+        )
+
+    def _onUpdateCheckResult(self, info: "updater.UpdateInfo", silent: bool) -> None:
+        if not info.available:
+            if not silent:
+                self.setStatus("")
+                messagebox.showinfo(
+                    "Check for Updates",
+                    f"You're up to date (v{APP_VERSION}).",
+                    parent=self.root,
+                )
+            return
+        # On the silent startup check, honor a version the user chose to skip.
+        if silent and info.tag and info.tag == self.settingsData.get("skip_update_version"):
+            return
+        self.setStatus("")
+        self._promptUpdate(info, silent)
+
+    def _promptUpdate(self, info: "updater.UpdateInfo", silent: bool) -> None:
+        notes = (info.notes or "").strip()
+        if len(notes) > 800:
+            notes = notes[:800].rstrip() + "…"
+        body = (
+            f"A new version is available.\n\n"
+            f"Installed:  v{APP_VERSION}\n"
+            f"Latest:      v{info.latest_version}\n"
+        )
+        if notes:
+            body += f"\nWhat's new:\n{notes}\n"
+        body += "\nDownload and install it now?"
+
+        win = tk.Toplevel(self.root)
+        win.title("Update Available")
+        win.transient(self.root)
+        win.resizable(False, False)
+        frame = ttk.Frame(win, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=body, justify="left", wraplength=420).pack(anchor="w")
+
+        btns = ttk.Frame(frame)
+        btns.pack(fill="x", pady=(14, 0))
+
+        def do_update():
+            win.destroy()
+            self._applyUpdate(info)
+
+        def open_page():
+            webbrowser.open(info.html_url or updater.RELEASES_PAGE)
+
+        def skip():
+            if info.tag:
+                self.settingsData["skip_update_version"] = info.tag
+                self.saveCurrentSettings()
+            win.destroy()
+
+        ttk.Button(btns, text="Update Now", command=do_update).pack(side="right")
+        ttk.Button(btns, text="Later", command=win.destroy).pack(side="right", padx=(0, 8))
+        ttk.Button(btns, text="Release Page", command=open_page).pack(side="left")
+        if silent:
+            ttk.Button(btns, text="Skip This Version", command=skip).pack(
+                side="left", padx=(8, 0)
+            )
+
+    def _applyUpdate(self, info: "updater.UpdateInfo") -> None:
+        """Download + stage the new build, then hand off to the .bat and quit."""
+        if not info.asset_url:
+            messagebox.showerror(
+                "Update",
+                "The release has no Windows download attached. "
+                "Please update from the Release page.",
+                parent=self.root,
+            )
+            return
+
+        progress = tk.Toplevel(self.root)
+        progress.title("Updating")
+        progress.transient(self.root)
+        progress.resizable(False, False)
+        pframe = ttk.Frame(progress, padding=16)
+        pframe.pack(fill="both", expand=True)
+        status = ttk.Label(pframe, text="Starting download…", wraplength=360)
+        status.pack(anchor="w")
+        bar = ttk.Progressbar(pframe, length=360, mode="determinate", maximum=100)
+        bar.pack(fill="x", pady=(10, 0))
+
+        def set_progress(read: int, total: int):
+            if total > 0:
+                pct = int(read * 100 / total)
+                self.root.after(0, lambda: (bar.config(value=pct),
+                                            status.config(text=f"Downloading… {pct}%")))
+            else:
+                mb = read / (1024 * 1024)
+                self.root.after(0, lambda: status.config(text=f"Downloading… {mb:.1f} MB"))
+
+        def worker():
+            try:
+                tmp = tempfile.mkdtemp(prefix="aoer_update_")
+                zip_path = updater.download_asset(
+                    info.asset_url, tmp, progress_cb=set_progress
+                )
+                self.root.after(0, lambda: status.config(text="Extracting…"))
+                staged = os.path.join(tmp, "staged")
+                os.makedirs(staged, exist_ok=True)
+                updater.stage_update(zip_path, staged)
+                self.root.after(0, lambda: self._finishUpdate(staged, progress))
+            except Exception as exc:
+                self.root.after(0, lambda e=exc: self._onUpdateApplyError(e, progress))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _onUpdateApplyError(self, exc: Exception, progress: "tk.Toplevel") -> None:
+        try:
+            progress.destroy()
+        except Exception:
+            pass
+        messagebox.showerror(
+            "Update", f"The update could not be installed:\n{exc}", parent=self.root
+        )
+
+    def _finishUpdate(self, staged_dir: str, progress: "tk.Toplevel") -> None:
+        """Spawn the detached installer and exit so it can replace the .exe."""
+        install_dir = baseDir
+        relaunch_exe = sys.executable
+        # The PyInstaller layout nests the .exe one level down inside the zip
+        # (dist/AOER-Ribbon-engine/*). If a single top-level folder was staged,
+        # copy from inside it so files land directly in install_dir.
+        entries = [e for e in os.listdir(staged_dir)]
+        if len(entries) == 1:
+            only = os.path.join(staged_dir, entries[0])
+            if os.path.isdir(only):
+                staged_dir = only
+        try:
+            updater.apply_update_windows(staged_dir, install_dir, relaunch_exe)
+        except Exception as exc:
+            self._onUpdateApplyError(exc, progress)
+            return
+        try:
+            progress.destroy()
+        except Exception:
+            pass
+        # Hand control to the .bat: it waits for this PID to vanish before it can
+        # overwrite the locked .exe, so we must exit now.
+        self.root.destroy()
+
+    def _showAbout(self) -> None:
+        messagebox.showinfo(
+            "About AOER Ribbon Engine",
+            f"AOER Ribbon Engine\nVersion {APP_VERSION}\n\n"
+            f"{updater.RELEASES_PAGE}",
+            parent=self.root,
+        )
 
     def run(self) -> None:
         self.root.mainloop()
