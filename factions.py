@@ -138,12 +138,23 @@ class FactionRegistry:
         self,
         available: dict[str, set[str]],
     ) -> list[str]:
-        """Return a list of human-readable warnings for assets referenced in
-        faction JSON files that don't have a matching PNG on disk.
+        """Return a list of human-readable warnings for asset config mistakes.
+
+        The filesystem is the allowlist: whatever PNGs are physically present
+        under ``assets/<FACTION>/{ribbons,awards,commendations}/`` show up, and
+        the JSON ``assets`` / ``shared_assets`` lists are NOT consulted for
+        visibility. We therefore do NOT warn about names listed in those fields
+        that lack a PNG on disk — listing a file in JSON is optional and absence
+        is normal (e.g. a recipient who wasn't shipped that PNG).
+
+        We still flag genuine config typos: ``no_recolor`` and ``descriptions``
+        keys that name an asset which doesn't exist, since those override the
+        behavior/tooltip of a specific file and a stray name is almost always a
+        mistake.
 
         `available` is `{category_name: {asset_name, ...}}` covering all
-        directories the engine knows about (e.g. Ribbons, Awards, etc.).
-        Asset matching is case-sensitive on the filename stem.
+        directories the engine knows about. Matching is case-sensitive on the
+        filename stem.
         """
         all_available: set[str] = set()
         for names in available.values():
@@ -151,11 +162,6 @@ class FactionRegistry:
 
         warnings: list[str] = []
         for key, faction in self.factions.items():
-            missing = sorted(name for name in faction.assets if name not in all_available)
-            if missing:
-                warnings.append(
-                    f"Faction {key!r} references missing asset(s): {', '.join(missing)}"
-                )
             stray_no_recolor = sorted(
                 name for name in faction.no_recolor if name not in all_available
             )
@@ -172,9 +178,6 @@ class FactionRegistry:
                     f"Faction {key!r} descriptions reference missing asset(s): "
                     f"{', '.join(stray_descriptions)}"
                 )
-        missing_shared = sorted(name for name in self.shared_assets if name not in all_available)
-        if missing_shared:
-            warnings.append(f"shared_assets references missing: {', '.join(missing_shared)}")
         return warnings
 
 

@@ -3895,15 +3895,16 @@ class RibbonEngineApp:
 
     # ------------------------------------------------------------------ Asset validator
     def _runAssetValidator(self) -> None:
-        """Warn if any faction asset is missing or has a Windows-hostile filename.
+        """Warn about real asset problems — never about JSON allowlist gaps.
 
-        Two checks:
-          1. Filesystem snapshot vs. faction JSON references — flags
-             names listed in JSON but absent on disk.
-          2. Windows-illegal characters (`<>:"/\\|?*`) in the on-disk
-             filename — these break extraction and PNG save on Windows,
-             so they're flagged regardless of OS the engine runs on
-             (most recipients are on Windows).
+        The filesystem is the allowlist, so a PNG simply not being on disk is
+        normal and is NOT flagged. We only surface genuine problems:
+          1. Stray `no_recolor` / `descriptions` keys in a faction JSON that
+             name an asset which doesn't exist (a likely typo).
+          2. Windows-illegal characters (`<>:"/\\|?*`) in an on-disk filename —
+             these break extraction and PNG save on Windows, so they're flagged
+             regardless of which OS the engine runs on.
+          3. Byte-identical duplicate PNGs across faction trees.
         """
         if self.factionRegistry is None:
             return
