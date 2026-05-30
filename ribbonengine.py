@@ -3563,7 +3563,22 @@ class RibbonEngineApp:
         return os.path.join(loadoutsDir, f"{safe}.json")
 
     def _resolveLoadoutFile(self, name: str) -> Optional[str]:
-        """Find an existing loadout file by stem, JSON preferred over PNG."""
+        """Find an existing loadout file by stem, JSON preferred over PNG.
+
+        Names come from `_listLoadoutNames`, which returns *raw* file stems —
+        including characters like the `[` `]` in exported `[name]_[stamp].png`
+        loadouts. So we match the exact on-disk stem first; only if that misses
+        do we fall back to the sanitized stem (loadouts saved through the GUI's
+        Name field, whose filenames were sanitized by `_loadoutPath`). Without
+        the exact pass, any bracketed export would be unloadable even though the
+        file is sitting right there in loadouts/.
+        """
+        # Guard against path traversal — `name` may originate from a text field.
+        if not (os.sep in name or (os.altsep and os.altsep in name) or name in (".", "..")):
+            for ext in (".json", ".png"):
+                exact = os.path.join(loadoutsDir, f"{name}{ext}")
+                if os.path.exists(exact):
+                    return exact
         json_path = self._loadoutPath(name)
         if os.path.exists(json_path):
             return json_path
