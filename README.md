@@ -37,9 +37,10 @@ Ribbon Engine v3/
 ├── factions.py              # Faction registry + recolor pipeline (don't run directly)
 ├── renderer.py              # Display-free PIL compositing core (headless-testable)
 ├── profiles.py              # LayoutProfile — the renderer's view of an Engine Profile
+├── migrations.py            # Headless, tested startup migrations (moves user files)
 ├── updater.py               # Self-update logic (checks Releases, stages, applies)
 ├── cli.py                   # Headless renderer for scripts/batches
-├── tests/                   # Unit tests (factions, renderer, profiles, updater)
+├── tests/                   # Unit tests (factions, renderer, profiles, updater, migrations)
 ├── run.sh                   # Mac/Linux launcher — `./run.sh` from a terminal
 ├── requirements.txt         # What pip installs (Pillow + NumPy)
 │

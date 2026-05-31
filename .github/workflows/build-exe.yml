@@ -23,8 +23,8 @@ jobs:
   # Fast, headless logic tests. Runs on every push + PR. The Windows .exe build
   # below depends on this job, so a red test blocks the build AND the release.
   # Keep these tests display-free: they must not import ribbonengine.py (which
-  # imports tkinter at module top). factions.py / renderer.py / profiles.py are
-  # all importable without a display.
+  # imports tkinter at module top). factions.py / renderer.py / profiles.py /
+  # migrations.py / updater.py are all importable without a display.
   test:
     runs-on: ubuntu-latest
     steps:

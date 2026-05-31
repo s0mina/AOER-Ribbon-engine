@@ -29,6 +29,7 @@ from factions import (
 )
 from profiles import LayoutProfile
 from renderer import RibbonRenderer
+import migrations
 import updater
 
 
@@ -147,116 +148,10 @@ def scanAssetTree() -> tuple[list[str], dict[str, list[str]]]:
                 by_hash.setdefault(digest, []).append(rel)
     duplicates = {h: paths for h, paths in by_hash.items() if len(paths) > 1}
     return illegal, duplicates
-def _resolveCharactersDir() -> str:
-    """Locate the nametape letter-tile folder, migrating the legacy layout.
-
-    ``Characters/`` used to live at the project root; it now lives at
-    ``assets/Characters/``. Fresh installs ship it in the new spot. But users
-    who update **in place** keep their old tree — the self-updater excludes
-    ``assets/`` and the top-level ``Characters/`` from its copy (so it never
-    clobbers user art), which means it also never reshapes them. So on first
-    launch of the new build we migrate the old folder ourselves.
-
-    Best-effort: if the move fails (read-only install, file lock) we fall back
-    to reading from the legacy location for this session, so the nametape still
-    renders. baseDir is normally writable (settings.json/output/loadouts all
-    live there), so the move succeeds in every ordinary install.
-    """
-    newDir = os.path.join(assetsRoot, "Characters")
-    legacyDir = os.path.join(baseDir, "Characters")
-    if os.path.isdir(newDir):
-        return newDir
-    if os.path.isdir(legacyDir):
-        try:
-            os.makedirs(assetsRoot, exist_ok=True)
-            shutil.move(legacyDir, newDir)
-            return newDir
-        except Exception as exc:  # perms / lock / partial move — stay functional
-            print(
-                f"[migration] Could not move {legacyDir!r} into assets/ "
-                f"({exc}); using the legacy location for this session.",
-                file=sys.stderr,
-            )
-            return legacyDir
-    # Neither exists: return the canonical path so the integrity check flags it.
-    return newDir
-
-
-charactersDir = _resolveCharactersDir()
-
-
-def _relocateFile(src: str, dst: str, label: str) -> None:
-    """Move ``src`` → ``dst`` if src exists and dst doesn't. Best-effort.
-
-    Skips silently when there's nothing to move or the destination is already
-    occupied (so we never clobber a file the user put there). Logs and swallows
-    permission/lock errors so a read-only install keeps running on the old
-    layout instead of crashing on launch.
-    """
-    if not os.path.isfile(src) or os.path.exists(dst):
-        return
-    try:
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.move(src, dst)
-    except Exception as exc:
-        print(
-            f"[migration] Could not move {label} asset {os.path.basename(src)!r} ({exc}).",
-            file=sys.stderr,
-        )
-
-
-def _migrateFactionAssetLayout() -> None:
-    """Normalize every faction's asset folder on startup, behind the scenes.
-
-    Two layout changes ship with this build that an in-place update can't apply
-    itself (the self-updater never reshapes ``assets/``):
-
-      * every faction should have ``shirttemplates/`` and ``gorgets/`` folders, and
-      * gorget art moves out of ``commendations/`` into its own ``gorgets/`` folder.
-
-    So on launch we create any missing subfolders and relocate gorget PNGs
-    (those whose name contains "gorget" — the same rule the scanner already used
-    to classify them). Existing installs converge with no manual shuffling.
-    Every step is best-effort; failures are logged and skipped, and the asset
-    scanner still falls back to reading gorgets out of ``commendations/`` for
-    anything that didn't migrate.
-    """
-    if not os.path.isdir(assetsRoot):
-        return
-    try:
-        entries = sorted(os.listdir(assetsRoot))
-    except Exception:
-        return
-    for entry in entries:
-        facDir = os.path.join(assetsRoot, entry)
-        # Characters/ is the nametape tile pool, not a faction tree — skip it.
-        if entry == "Characters" or not os.path.isdir(facDir):
-            continue
-        for sub in FACTION_ASSET_SUBDIRS:
-            try:
-                os.makedirs(os.path.join(facDir, sub), exist_ok=True)
-            except Exception as exc:
-                print(f"[migration] Could not create {entry}/{sub} ({exc}).", file=sys.stderr)
-        # Legacy single top-level shirttemplate.png → shirttemplates/.
-        _relocateFile(
-            os.path.join(facDir, "shirttemplate.png"),
-            os.path.join(facDir, "shirttemplates", "shirttemplate.png"),
-            entry,
-        )
-        # Gorget art that still lives in commendations/ → gorgets/.
-        commDir = os.path.join(facDir, "commendations")
-        gorgetDir = os.path.join(facDir, "gorgets")
-        if os.path.isdir(commDir):
-            try:
-                names = sorted(os.listdir(commDir))
-            except Exception:
-                names = []
-            for fn in names:
-                if fn.lower().endswith(".png") and "gorget" in fn.lower():
-                    _relocateFile(os.path.join(commDir, fn), os.path.join(gorgetDir, fn), entry)
-
-
-_migrateFactionAssetLayout()
+# Converge older on-disk layouts to the current one (see migrations.py). The
+# logic lives in a headless, unit-tested module because it moves user files.
+charactersDir = migrations.resolve_characters_dir(baseDir, assetsRoot)
+migrations.migrate_faction_asset_layout(assetsRoot, FACTION_ASSET_SUBDIRS)
 settingsPath = os.path.join(baseDir, "settings.json")
 docsDir = os.path.join(baseDir, "docs")
 profilesDir = os.path.join(baseDir, "Engine Profiles")
@@ -730,7 +625,7 @@ def loadRibbonGroups() -> dict[str, list[AssetItem]]:
     # up gorget-named art from commendations/ on installs that haven't migrated.
     for item in collect("commendations"):
         lowerName = item.name.lower()
-        if "gorget" in lowerName:
+        if migrations.is_gorget_name(item.name):
             if item.name not in gorgetNames:
                 groups["gorget"].append(item)
                 gorgetNames.add(item.name)
