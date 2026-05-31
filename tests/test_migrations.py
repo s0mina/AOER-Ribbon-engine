@@ -181,6 +181,45 @@ class FactionLayoutMigrationTests(unittest.TestCase):
         )
 
 
+class CleanupLegacyRootDocsTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = self._tmp.name
+        self.docs = os.path.join(self.base, "docs")
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_removes_root_doc_when_duplicated_in_docs(self):
+        _touch(os.path.join(self.base, "FACTIONS.md"))
+        _touch(os.path.join(self.docs, "FACTIONS.md"))
+        removed = migrations.cleanup_legacy_root_docs(self.base, self.docs, log=lambda m: None)
+        self.assertEqual(removed, 1)
+        self.assertFalse(os.path.isfile(os.path.join(self.base, "FACTIONS.md")))
+        # The canonical copy in docs/ is untouched.
+        self.assertTrue(os.path.isfile(os.path.join(self.docs, "FACTIONS.md")))
+
+    def test_keeps_root_doc_with_no_canonical_twin(self):
+        # No docs/ copy => never delete, so we can't lose the only copy.
+        _touch(os.path.join(self.base, "CLI.md"))
+        removed = migrations.cleanup_legacy_root_docs(self.base, self.docs, log=lambda m: None)
+        self.assertEqual(removed, 0)
+        self.assertTrue(os.path.isfile(os.path.join(self.base, "CLI.md")))
+
+    def test_never_removes_readme_even_if_requested(self):
+        _touch(os.path.join(self.base, "README.md"))
+        _touch(os.path.join(self.docs, "README.md"))
+        removed = migrations.cleanup_legacy_root_docs(
+            self.base, self.docs, names=("README.md", "FACTIONS.md"), log=lambda m: None
+        )
+        self.assertEqual(removed, 0)
+        self.assertTrue(os.path.isfile(os.path.join(self.base, "README.md")))
+
+    def test_is_idempotent(self):
+        _touch(os.path.join(self.base, "INSTALLATION.md"))
+        _touch(os.path.join(self.docs, "INSTALLATION.md"))
+        self.assertEqual(migrations.cleanup_legacy_root_docs(self.base, self.docs, log=lambda m: None), 1)
+        self.assertEqual(migrations.cleanup_legacy_root_docs(self.base, self.docs, log=lambda m: None), 0)
+
+
 class RelocateGorgetsTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

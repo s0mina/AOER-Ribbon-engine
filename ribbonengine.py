@@ -154,6 +154,8 @@ charactersDir = migrations.resolve_characters_dir(baseDir, assetsRoot)
 migrations.migrate_faction_asset_layout(assetsRoot, FACTION_ASSET_SUBDIRS)
 settingsPath = os.path.join(baseDir, "settings.json")
 docsDir = os.path.join(baseDir, "docs")
+# Purge root-level doc copies that have moved into docs/ (post-update dedup).
+migrations.cleanup_legacy_root_docs(baseDir, docsDir)
 profilesDir = os.path.join(baseDir, "Engine Profiles")
 legacyProfilePath = os.path.join(baseDir, "engine_profile.json")
 defaultProfileName = "default"

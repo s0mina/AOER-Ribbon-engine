@@ -37,6 +37,9 @@ SHIRT_TEMPLATES_SUBDIR = "shirttemplates"
 LEGACY_SHIRT_TEMPLATE = "shirttemplate.png"
 # Folders under assets/ that are not faction trees and must be left alone.
 NON_FACTION_DIRS: tuple[str, ...] = ("Characters",)
+# Docs that moved from the project root into docs/. README.md is deliberately
+# NOT here — it still lives at the root.
+LEGACY_ROOT_DOCS: tuple[str, ...] = ("FACTIONS.md", "CLI.md", "INSTALLATION.md", "SHORTCUTS.md")
 
 
 def _default_log(message: str) -> None:
@@ -174,3 +177,36 @@ def migrate_faction_asset_layout(
             log=log,
         )
         relocate_gorgets(faction_dir, log=log)
+
+
+def cleanup_legacy_root_docs(
+    base_dir: str,
+    docs_dir: str,
+    *,
+    names: tuple[str, ...] = LEGACY_ROOT_DOCS,
+    log: LogFn = _default_log,
+) -> int:
+    """Remove stale top-level doc copies that now live in ``docs/``.
+
+    These ``.md`` files moved into ``docs/``; an in-place update copies the new
+    ``docs/`` tree but can't purge the old root copies, leaving duplicates.
+
+    This is the one migration that deletes a file, so it's deliberately narrow:
+    a root copy is removed **only** when the same-named file also exists in
+    ``docs/`` — so the content is never actually lost, it's a dedup. ``README.md``
+    is never removed (it belongs at the root and isn't in ``names``). Best-effort
+    and idempotent. Returns the number of files removed.
+    """
+    removed = 0
+    for name in names:
+        if name.lower() == "readme.md":  # never remove the root README
+            continue
+        root_path = os.path.join(base_dir, name)
+        canonical = os.path.join(docs_dir, name)
+        if os.path.isfile(root_path) and os.path.isfile(canonical):
+            try:
+                os.remove(root_path)
+                removed += 1
+            except OSError as exc:
+                log(f"[migration] Could not remove stale root {name} ({exc}); left in place.")
+    return removed
