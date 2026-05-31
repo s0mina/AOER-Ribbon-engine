@@ -155,6 +155,12 @@ class BuildScriptTests(unittest.TestCase):
         script = updater.build_update_script(r"C:\s", r"C:\app", r"C:\app\x.exe", pid=1)
         self.assertIn(os.path.join(r"C:\app", "update_log.txt"), script)
 
+    def test_log_lines_are_timestamped(self):
+        # Each log line carries %DATE% %TIME% so failures can be placed in time.
+        script = updater.build_update_script(r"C:\s", r"C:\app", r"C:\app\x.exe", pid=1)
+        for marker in ("started", "copying files", "robocopy exit code", "relaunching"):
+            self.assertIn(f"[update] %DATE% %TIME% {marker}", script)
+
     def test_aborts_relaunch_on_robocopy_failure(self):
         # robocopy 8+ is a real failure: don't relaunch a half-copied install.
         script = updater.build_update_script(r"C:\s", r"C:\app", r"C:\app\x.exe", pid=1)

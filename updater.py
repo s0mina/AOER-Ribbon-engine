@@ -259,9 +259,9 @@ def build_update_script(
         "echo  Please wait - this takes a minute. It will relaunch itself.\r\n"
         "echo  Do NOT close this window.\r\n"
         'echo ============================================================\r\n'
-        '>"%LOG%" echo [update] started %DATE% %TIME%\r\n'
+        '>"%LOG%" echo [update] %DATE% %TIME% started\r\n'
         "echo Waiting for the app to close...\r\n"
-        '>>"%LOG%" echo [update] waiting for pid ' f"{pid} to exit\r\n"
+        '>>"%LOG%" echo [update] %DATE% %TIME% waiting for pid ' f"{pid} to exit\r\n"
         ":wait\r\n"
         f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\r\n'
         "if not errorlevel 1 (\r\n"
@@ -269,20 +269,20 @@ def build_update_script(
         "  goto wait\r\n"
         ")\r\n"
         "echo Copying new files...\r\n"
-        '>>"%LOG%" echo [update] copying files\r\n'
+        '>>"%LOG%" echo [update] %DATE% %TIME% copying files\r\n'
         f'robocopy "{staged_dir}" "{install_dir}" /E /IS /IT /R:3 /W:2 '
         f'/NFL /NDL /NJH /NJS /NP /XD {xd} /XF {xf} >>"%LOG%" 2>&1\r\n'
         "set RC=%ERRORLEVEL%\r\n"
-        '>>"%LOG%" echo [update] robocopy exit code %RC%\r\n'
+        '>>"%LOG%" echo [update] %DATE% %TIME% robocopy exit code %RC%\r\n'
         "if %RC% GEQ 8 (\r\n"
         "  echo.\r\n"
         "  echo Update FAILED (robocopy code %RC%). See update_log.txt.\r\n"
-        '  >>"%LOG%" echo [update] FAILED - aborting relaunch\r\n'
+        '  >>"%LOG%" echo [update] %DATE% %TIME% FAILED - aborting relaunch\r\n'
         "  pause\r\n"
         "  exit /b %RC%\r\n"
         ")\r\n"
         "echo Done. Relaunching...\r\n"
-        '>>"%LOG%" echo [update] relaunching\r\n'
+        '>>"%LOG%" echo [update] %DATE% %TIME% relaunching\r\n'
         f'start "" "{relaunch_exe}"\r\n'
         f'rmdir /S /Q "{staged_dir}" >nul 2>&1\r\n'
         '(goto) 2>nul & del "%~f0"\r\n'
