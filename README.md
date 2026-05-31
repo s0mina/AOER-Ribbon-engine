@@ -39,7 +39,7 @@ Ribbon Engine v3/
 ├── profiles.py              # LayoutProfile — the renderer's view of an Engine Profile
 ├── updater.py               # Self-update logic (checks Releases, stages, applies)
 ├── cli.py                   # Headless renderer for scripts/batches
-├── test_*.py                # Unit tests (factions, renderer, profiles, updater)
+├── tests/                   # Unit tests (factions, renderer, profiles, updater)
 ├── run.sh                   # Mac/Linux launcher — `./run.sh` from a terminal
 ├── requirements.txt         # What pip installs (Pillow + NumPy)
 │
@@ -497,7 +497,7 @@ because the files aren't on their machine.
 ## Tests
 
 ```
-python -m unittest discover -p "test_*.py"
+python -m unittest discover -s tests -t . -p "test_*.py"
 ```
 
 Should print `OK` after the full suite (faction recolor, the headless
