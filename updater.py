@@ -218,32 +218,64 @@ def build_update_script(
     """Return the .bat that waits for the app to exit, copies, and relaunches.
 
     Excludes (``/XD`` / ``/XF``) the *top-level* data dirs/files by full staged
-    path, so user content survives. robocopy exit codes 0–7 are success, so the
-    script doesn't treat them as errors.
+    path, so user content survives. robocopy exit codes 0–7 are success; 8+ is a
+    real failure, so the script reports it and pauses instead of relaunching a
+    half-copied install.
+
+    The script runs in a **visible** console and echoes its progress while also
+    appending to ``update_log.txt`` in the install dir — so the minute-or-so the
+    copy takes looks like work in progress, not a frozen blank desktop, and a
+    failure leaves a diagnosable trail.
     """
     xd = " ".join(f'"{os.path.join(staged_dir, d)}"' for d in data_dirs)
     xf = " ".join(f'"{os.path.join(staged_dir, f)}"' for f in data_files)
+    log = os.path.join(install_dir, "update_log.txt")
     return (
         "@echo off\r\n"
         "setlocal enableextensions\r\n"
+        'title Updating AOER Ribbon Engine\r\n'
+        f'set "LOG={log}"\r\n'
+        'echo ============================================================\r\n'
+        "echo  Updating AOER Ribbon Engine\r\n"
+        "echo  Please wait - this takes a minute. It will relaunch itself.\r\n"
+        "echo  Do NOT close this window.\r\n"
+        'echo ============================================================\r\n'
+        '>"%LOG%" echo [update] started %DATE% %TIME%\r\n'
+        "echo Waiting for the app to close...\r\n"
+        '>>"%LOG%" echo [update] waiting for pid ' f"{pid} to exit\r\n"
         ":wait\r\n"
         f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\r\n'
         "if not errorlevel 1 (\r\n"
         "  timeout /t 1 /nobreak >nul\r\n"
         "  goto wait\r\n"
         ")\r\n"
+        "echo Copying new files...\r\n"
+        '>>"%LOG%" echo [update] copying files\r\n'
         f'robocopy "{staged_dir}" "{install_dir}" /E /IS /IT /R:3 /W:2 '
-        f"/NFL /NDL /NJH /NJS /NP /XD {xd} /XF {xf} >nul\r\n"
+        f'/NFL /NDL /NJH /NJS /NP /XD {xd} /XF {xf} >>"%LOG%" 2>&1\r\n'
+        "set RC=%ERRORLEVEL%\r\n"
+        '>>"%LOG%" echo [update] robocopy exit code %RC%\r\n'
+        "if %RC% GEQ 8 (\r\n"
+        "  echo.\r\n"
+        "  echo Update FAILED (robocopy code %RC%). See update_log.txt.\r\n"
+        '  >>"%LOG%" echo [update] FAILED - aborting relaunch\r\n'
+        "  pause\r\n"
+        "  exit /b %RC%\r\n"
+        ")\r\n"
+        "echo Done. Relaunching...\r\n"
+        '>>"%LOG%" echo [update] relaunching\r\n'
         f'start "" "{relaunch_exe}"\r\n'
         f'rmdir /S /Q "{staged_dir}" >nul 2>&1\r\n'
         '(goto) 2>nul & del "%~f0"\r\n'
     )
 
 
-# Windows process-creation flags (so the helper survives our exit, no console).
-_DETACHED_PROCESS = 0x00000008
+# Windows process-creation flags. The helper must survive our exit (its own
+# process group) AND get its own VISIBLE console window: CREATE_NEW_CONSOLE means
+# the minute-long copy shows progress instead of a blank desktop, which users
+# read as "nothing happened". (We deliberately do NOT use CREATE_NO_WINDOW.)
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
-_CREATE_NO_WINDOW = 0x08000000
+_CREATE_NEW_CONSOLE = 0x00000010
 
 
 def apply_update_windows(
@@ -270,7 +302,7 @@ def apply_update_windows(
     if spawn:
         subprocess.Popen(
             ["cmd", "/c", bat_path],
-            creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW,
+            creationflags=_CREATE_NEW_PROCESS_GROUP | _CREATE_NEW_CONSOLE,
             close_fds=True,
         )
     return bat_path

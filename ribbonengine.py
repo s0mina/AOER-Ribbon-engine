@@ -178,7 +178,7 @@ METADATA_SCHEMA_VERSION = 2
 
 # The app's own release version, compared against the latest GitHub Release tag
 # by the self-updater. Keep this in lock-step with the pushed ``vX.Y`` tag.
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 
 
 class _Tooltip:

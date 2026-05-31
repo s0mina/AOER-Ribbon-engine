@@ -140,6 +140,28 @@ class BuildScriptTests(unittest.TestCase):
         script = updater.build_update_script(r"C:\s", r"C:\a", r"C:\a\x.exe", pid=1)
         self.assertIn("\r\n", script)
 
+    def test_logs_to_install_dir(self):
+        # A log file in the install dir makes a "does nothing" report diagnosable.
+        script = updater.build_update_script(r"C:\s", r"C:\app", r"C:\app\x.exe", pid=1)
+        self.assertIn(os.path.join(r"C:\app", "update_log.txt"), script)
+
+    def test_aborts_relaunch_on_robocopy_failure(self):
+        # robocopy 8+ is a real failure: don't relaunch a half-copied install.
+        script = updater.build_update_script(r"C:\s", r"C:\app", r"C:\app\x.exe", pid=1)
+        self.assertIn("GEQ 8", script)
+        self.assertIn("ERRORLEVEL", script)
+
+    def test_shows_user_facing_message(self):
+        # The console is visible and tells the user to wait, not a blank desktop.
+        script = updater.build_update_script(r"C:\s", r"C:\app", r"C:\app\x.exe", pid=1)
+        self.assertIn("Updating AOER Ribbon Engine", script)
+
+    def test_does_not_hide_the_console(self):
+        # Regression: the helper must not be spawned with CREATE_NO_WINDOW, which
+        # made the update look like it "did nothing" (CW-279).
+        self.assertFalse(hasattr(updater, "_CREATE_NO_WINDOW"))
+        self.assertTrue(hasattr(updater, "_CREATE_NEW_CONSOLE"))
+
 
 class ApplyUpdateTests(unittest.TestCase):
     def test_writes_bat_without_spawning(self):
