@@ -14,8 +14,8 @@ A **faction** is defined by two things:
 1. A JSON file at `factions/<KEY>.json` that describes the faction's
    palette (border / stripe / base colors) and display name.
 2. A directory at `assets/<KEY>/` that holds the PNGs that faction is
-   allowed to render — split into `ribbons/`, `awards/`, and
-   `commendations/`.
+   allowed to render — split into `ribbons/`, `awards/`,
+   `commendations/`, and `gorgets/`.
 
 **Both must exist.** The JSON without the directory means a faction
 shows up in the dropdown but has nothing to render. The directory
@@ -62,12 +62,20 @@ Field reference:
 assets/NES/
 ├── ribbons/        # drop *.png files in here
 ├── awards/         # *.png medal art
-├── commendations/  # *.png gorgets/badges/commendations
+├── commendations/  # *.png corpus commendations, badges, plain commendations
+├── gorgets/        # *.png gorget art (renders on its own row)
 └── shirttemplates/ # optional *.png shirt-preview overlays for this faction
 ```
 
 You can leave any of these empty if NES doesn't have assets of
-that type. Just create the folder so the engine knows it exists.
+that type. The engine creates these subfolders for every faction on
+startup, so you don't have to make them by hand.
+
+`gorgets/` is its own folder so gorget art is rendered on the gorget
+row. (Historically gorgets lived in `commendations/` and were sorted out
+by having "gorget" in the filename — that still works as a fallback, but
+the dedicated folder is the clean way. The engine moves any gorget-named
+PNG out of `commendations/` into `gorgets/` automatically on first launch.)
 
 `shirttemplates/` is optional. Every PNG you drop there appears in the
 **Shirt preview** dropdown while NES is active; a file named exactly
@@ -77,7 +85,7 @@ never recolored.
 ### That's it
 
 Restart the engine. NES appears in the dropdown. The sidebar shows
-exactly the PNGs you dropped into the three subfolders, plus whatever
+exactly the PNGs you dropped into the asset subfolders, plus whatever
 is in `assets/AOER/` (the corp-wide pool — see below).
 
 ## How "allowed assets" work
@@ -85,7 +93,7 @@ is in `assets/AOER/` (the corp-wide pool — see below).
 There is **no JSON allowlist** for assets. The filesystem is the
 authority. The engine builds the sidebar by scanning, in order:
 
-1. `assets/<ACTIVE_FACTION>/ribbons/` (+ `awards/`, `commendations/`)
+1. `assets/<ACTIVE_FACTION>/ribbons/` (+ `awards/`, `commendations/`, `gorgets/`)
 2. `assets/<EACH_HIDDEN_FACTION>/…` (i.e. `assets/AOER/…`)
 
 Names from step 1 win if the same filename exists in both — so a
@@ -253,7 +261,7 @@ Settings.
 - **Sidecar on a ribbon that's also in the faction's
   `no_recolor` list.** Both gates have the same effect — the ribbon is
   not recolored. The faction list is checked first.
-- **Sidecar on a non-ribbon (awards/, commendations/).** Ignored.
+- **Sidecar on a non-ribbon (awards/, commendations/, gorgets/).** Ignored.
   Recolor only runs on ribbons, so the sidecar has nothing to
   override.
 - **`recolor` block with all three regions `false`.** Equivalent to
@@ -287,13 +295,13 @@ Python's import system picks `factions.py` first when you do
 `factions/<KEY>.json` exists, is valid JSON, and that the `key`
 inside matches the filename.
 
-**A faction appears but has no assets.** Create
-`assets/<KEY>/{ribbons,awards,commendations}/` and drop PNGs in.
+**A faction appears but has no assets.** The engine auto-creates
+`assets/<KEY>/{ribbons,awards,commendations,gorgets,shirttemplates}/` on
+launch — just drop PNGs into them.
 
 **A ribbon doesn't get recolored.** It has to be under
-`assets/<FACTION>/ribbons/`. Files under `awards/` and
-`commendations/` are never recolored regardless of what they look
-like.
+`assets/<FACTION>/ribbons/`. Files under `awards/`, `commendations/`,
+and `gorgets/` are never recolored regardless of what they look like.
 
 **On launch I see "Asset warnings" in the status bar.** Look at the
 terminal window where you launched the engine — full details print

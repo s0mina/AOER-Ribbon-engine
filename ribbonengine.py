@@ -89,13 +89,21 @@ if getattr(sys, "frozen", False):
     baseDir = os.path.dirname(sys.executable)
 else:
     baseDir = os.path.dirname(os.path.abspath(__file__))
-# Per-faction asset tree: assets/<FACTION_KEY>/{ribbons,awards,commendations}/*.png.
+# Per-faction asset tree: assets/<FACTION_KEY>/{ribbons,awards,commendations,gorgets}/*.png.
 # The filesystem IS the allowlist — a faction can only render PNGs physically
 # present under its directory. This is out-of-band protection: a recipient who
 # was never shipped a ribbon file cannot render it, regardless of code edits.
 assetsRoot = os.path.join(baseDir, "assets")
 ribbonOutputDir = os.path.join(baseDir, "ribbonoutput")
-ASSET_SUBDIRS: tuple[str, ...] = ("ribbons", "awards", "commendations")
+# Renderable asset categories — each is a folder under assets/<FACTION>/ and the
+# validator scans them for illegal names / duplicate content. Gorgets used to be
+# filed inside commendations/ and sorted out by filename; they now get their own
+# folder (with a filename fallback kept for un-migrated installs).
+ASSET_SUBDIRS: tuple[str, ...] = ("ribbons", "awards", "commendations", "gorgets")
+# Every subfolder a faction asset dir should have on disk. Superset of the
+# renderable categories plus the preview-only shirt pool. _migrateFactionAssetLayout
+# creates any that are missing on startup.
+FACTION_ASSET_SUBDIRS: tuple[str, ...] = ASSET_SUBDIRS + ("shirttemplates",)
 # Characters Windows forbids in filenames. We flag these in the asset
 # validator and strip them from generated output filenames so the engine
 # stays portable when most recipients are on Windows.
@@ -175,6 +183,80 @@ def _resolveCharactersDir() -> str:
 
 
 charactersDir = _resolveCharactersDir()
+
+
+def _relocateFile(src: str, dst: str, label: str) -> None:
+    """Move ``src`` → ``dst`` if src exists and dst doesn't. Best-effort.
+
+    Skips silently when there's nothing to move or the destination is already
+    occupied (so we never clobber a file the user put there). Logs and swallows
+    permission/lock errors so a read-only install keeps running on the old
+    layout instead of crashing on launch.
+    """
+    if not os.path.isfile(src) or os.path.exists(dst):
+        return
+    try:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.move(src, dst)
+    except Exception as exc:
+        print(
+            f"[migration] Could not move {label} asset {os.path.basename(src)!r} ({exc}).",
+            file=sys.stderr,
+        )
+
+
+def _migrateFactionAssetLayout() -> None:
+    """Normalize every faction's asset folder on startup, behind the scenes.
+
+    Two layout changes ship with this build that an in-place update can't apply
+    itself (the self-updater never reshapes ``assets/``):
+
+      * every faction should have ``shirttemplates/`` and ``gorgets/`` folders, and
+      * gorget art moves out of ``commendations/`` into its own ``gorgets/`` folder.
+
+    So on launch we create any missing subfolders and relocate gorget PNGs
+    (those whose name contains "gorget" — the same rule the scanner already used
+    to classify them). Existing installs converge with no manual shuffling.
+    Every step is best-effort; failures are logged and skipped, and the asset
+    scanner still falls back to reading gorgets out of ``commendations/`` for
+    anything that didn't migrate.
+    """
+    if not os.path.isdir(assetsRoot):
+        return
+    try:
+        entries = sorted(os.listdir(assetsRoot))
+    except Exception:
+        return
+    for entry in entries:
+        facDir = os.path.join(assetsRoot, entry)
+        # Characters/ is the nametape tile pool, not a faction tree — skip it.
+        if entry == "Characters" or not os.path.isdir(facDir):
+            continue
+        for sub in FACTION_ASSET_SUBDIRS:
+            try:
+                os.makedirs(os.path.join(facDir, sub), exist_ok=True)
+            except Exception as exc:
+                print(f"[migration] Could not create {entry}/{sub} ({exc}).", file=sys.stderr)
+        # Legacy single top-level shirttemplate.png → shirttemplates/.
+        _relocateFile(
+            os.path.join(facDir, "shirttemplate.png"),
+            os.path.join(facDir, "shirttemplates", "shirttemplate.png"),
+            entry,
+        )
+        # Gorget art that still lives in commendations/ → gorgets/.
+        commDir = os.path.join(facDir, "commendations")
+        gorgetDir = os.path.join(facDir, "gorgets")
+        if os.path.isdir(commDir):
+            try:
+                names = sorted(os.listdir(commDir))
+            except Exception:
+                names = []
+            for fn in names:
+                if fn.lower().endswith(".png") and "gorget" in fn.lower():
+                    _relocateFile(os.path.join(commDir, fn), os.path.join(gorgetDir, fn), entry)
+
+
+_migrateFactionAssetLayout()
 settingsPath = os.path.join(baseDir, "settings.json")
 docsDir = os.path.join(baseDir, "docs")
 profilesDir = os.path.join(baseDir, "Engine Profiles")
@@ -582,7 +664,7 @@ def _contributingFactionKeys(registry: Optional[FactionRegistry], active: str) -
 
 
 def loadRibbonGroups() -> dict[str, list[AssetItem]]:
-    """Scan `assets/<faction>/{ribbons,awards,commendations}/` and bucket by category.
+    """Scan `assets/<faction>/{ribbons,awards,commendations,gorgets}/` and bucket by category.
 
     The on-disk file set defines the allowlist — there is no JSON-side
     enumeration. Adding `assets/SORO/ribbons/NewThing.png` makes it
@@ -635,18 +717,23 @@ def loadRibbonGroups() -> dict[str, list[AssetItem]]:
 
     groups: dict[str, list[AssetItem]] = {
         "sacks": collect("awards"),
-        "gorget": [],
+        "gorget": collect("gorgets"),
         "spbadge": [],
         "commendations": [],
         "corpus": [],
         "ribbons": collect("ribbons"),
     }
-    # The commendations dir holds gorgets, corpus commendations, special
-    # badges, and plain commendations — classify by filename pattern.
+    gorgetNames = {item.name for item in groups["gorget"]}
+    # commendations/ still holds corpus commendations, special badges, and plain
+    # commendations — classified by filename pattern. Gorgets now live in their
+    # own gorgets/ dir; the "gorget" branch below is a fallback that still picks
+    # up gorget-named art from commendations/ on installs that haven't migrated.
     for item in collect("commendations"):
         lowerName = item.name.lower()
         if "gorget" in lowerName:
-            groups["gorget"].append(item)
+            if item.name not in gorgetNames:
+                groups["gorget"].append(item)
+                gorgetNames.add(item.name)
         elif lowerName.startswith(("mr ", "hr ", "anrocom ")):
             groups["corpus"].append(item)
         elif "badge" in lowerName:

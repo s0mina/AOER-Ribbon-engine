@@ -53,11 +53,13 @@ Ribbon Engine v3/
 │   │   ├── ribbons/         #     Ribbons that get recolored per faction
 │   │   │   └── *.png.meta.json  #  Optional per-ribbon recolor overrides
 │   │   ├── awards/          #     Medals (never recolored)
-│   │   └── commendations/   #     Gorgets, badges, commendations (never recolored)
+│   │   ├── commendations/   #     Badges, commendations (never recolored)
+│   │   └── gorgets/         #     Gorget art (never recolored)
 │   ├── <FACTION>/           #   One tree per faction. Same subfolders.
 │   │   ├── ribbons/
 │   │   ├── awards/
 │   │   ├── commendations/
+│   │   ├── gorgets/         #     Gorget art (own row on the canvas)
 │   │   └── shirttemplates/  #     Optional: shirt PNGs for this faction's overlay dropdown
 │   └── Characters/          #   Letter tiles for the nametape
 │
@@ -328,13 +330,14 @@ needed — the engine reads the folder.
 ### A new corp-wide ribbon/award/commendation (visible to everyone)
 
 Drop the PNG into `assets/AOER/<type>/`, where `<type>` is `ribbons`,
-`awards`, or `commendations`.
+`awards`, `commendations`, or `gorgets`.
 
 ### A new faction
 
 Create `factions/<KEY>.json` (see [FACTIONS.md](docs/FACTIONS.md) for the
-schema), then create `assets/<KEY>/ribbons/`, `…/awards/`, and
-`…/commendations/` and populate them. The faction shows up in the
+schema); the engine creates the `assets/<KEY>/` subfolders (`ribbons/`,
+`awards/`, `commendations/`, `gorgets/`, `shirttemplates/`) for you on the
+next launch — just drop PNGs into them. The faction shows up in the
 dropdown on next launch. Optionally drop shirt PNGs into
 `assets/<KEY>/shirttemplates/` to give the faction its own shirt-preview
 overlays (see [Shirt preview overlay](#shirt-preview-overlay)).

@@ -141,7 +141,7 @@ class FactionRegistry:
         """Return a list of human-readable warnings for asset config mistakes.
 
         The filesystem is the allowlist: whatever PNGs are physically present
-        under ``assets/<FACTION>/{ribbons,awards,commendations}/`` show up, and
+        under ``assets/<FACTION>/{ribbons,awards,commendations,gorgets}/`` show up, and
         the JSON ``assets`` / ``shared_assets`` lists are NOT consulted for
         visibility. We therefore do NOT warn about names listed in those fields
         that lack a PNG on disk — listing a file in JSON is optional and absence
