@@ -7,11 +7,21 @@ guarantees, and zip-slip rejection during staging.
 """
 
 import os
+import ssl
 import tempfile
 import unittest
 import zipfile
 
 import updater
+
+
+class SslContextTests(unittest.TestCase):
+    def test_uses_certifi_bundle_when_available(self):
+        # The frozen exe ships no OS trust store, so the update check needs a
+        # certifi-backed context or it dies with CERTIFICATE_VERIFY_FAILED.
+        ctx = updater._ssl_context()
+        self.assertIsInstance(ctx, ssl.SSLContext)
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
 
 
 class ParseVersionTests(unittest.TestCase):

@@ -74,8 +74,12 @@ jobs:
         #   drag-and-drop needs. Without it, TkinterDnD.Tk() builds its window
         #   then fails to load tkdnd at runtime, leaving a phantom empty "tk"
         #   window and silently disabling file drops.
+        # --collect-data certifi: bundle the CA cert bundle so urllib's HTTPS
+        #   update check to api.github.com can verify GitHub's cert. Without it
+        #   the frozen exe has no trust store and the check fails with
+        #   CERTIFICATE_VERIFY_FAILED ("update does nothing").
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name "AOER-Ribbon-engine" --collect-all tkinterdnd2 ribbonengine.py
+          pyinstaller --noconfirm --onedir --windowed --name "AOER-Ribbon-engine" --collect-all tkinterdnd2 --collect-data certifi ribbonengine.py
 
       - name: Copy data folders next to the exe
         # The engine reads its assets AND writes its output in folders next to

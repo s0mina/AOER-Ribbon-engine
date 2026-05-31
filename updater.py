@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import subprocess
 import tempfile
 import zipfile
@@ -28,6 +29,24 @@ from typing import Callable, Optional
 
 import urllib.parse
 import urllib.request
+
+
+def _ssl_context() -> Optional[ssl.SSLContext]:
+    """Return an SSL context that can verify GitHub's cert in a frozen build.
+
+    The PyInstaller ``.exe`` ships no OS trust store, so a plain ``urlopen`` to
+    ``https://api.github.com`` dies with ``CERTIFICATE_VERIFY_FAILED`` — the
+    "update check does nothing" bug. ``certifi`` provides a bundled CA file
+    (PyInstaller's certifi hook ships it inside the exe). If certifi is missing
+    (dev box without it installed) we return ``None`` so urllib falls back to the
+    system default, which works fine off a normal Python install.
+    """
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return None
 
 GITHUB_REPO = "s0mina/AOER-Ribbon-engine"
 # Releases name the Windows zip with the version baked in so users can tell
@@ -113,7 +132,7 @@ def fetch_latest_release(repo: str = GITHUB_REPO, timeout: int = 15) -> dict:
         API_LATEST.format(repo=repo),
         headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -178,7 +197,7 @@ def download_asset(
     # falling back to the legacy name. Only used as a temp file before staging.
     filename = os.path.basename(urllib.parse.urlsplit(url).path) or ASSET_NAME
     out_path = os.path.join(dest_dir, filename)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         read = 0
         with open(out_path, "wb") as fh:
