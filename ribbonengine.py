@@ -139,7 +139,42 @@ def scanAssetTree() -> tuple[list[str], dict[str, list[str]]]:
                 by_hash.setdefault(digest, []).append(rel)
     duplicates = {h: paths for h, paths in by_hash.items() if len(paths) > 1}
     return illegal, duplicates
-charactersDir = os.path.join(assetsRoot, "Characters")
+def _resolveCharactersDir() -> str:
+    """Locate the nametape letter-tile folder, migrating the legacy layout.
+
+    ``Characters/`` used to live at the project root; it now lives at
+    ``assets/Characters/``. Fresh installs ship it in the new spot. But users
+    who update **in place** keep their old tree — the self-updater excludes
+    ``assets/`` and the top-level ``Characters/`` from its copy (so it never
+    clobbers user art), which means it also never reshapes them. So on first
+    launch of the new build we migrate the old folder ourselves.
+
+    Best-effort: if the move fails (read-only install, file lock) we fall back
+    to reading from the legacy location for this session, so the nametape still
+    renders. baseDir is normally writable (settings.json/output/loadouts all
+    live there), so the move succeeds in every ordinary install.
+    """
+    newDir = os.path.join(assetsRoot, "Characters")
+    legacyDir = os.path.join(baseDir, "Characters")
+    if os.path.isdir(newDir):
+        return newDir
+    if os.path.isdir(legacyDir):
+        try:
+            os.makedirs(assetsRoot, exist_ok=True)
+            shutil.move(legacyDir, newDir)
+            return newDir
+        except Exception as exc:  # perms / lock / partial move — stay functional
+            print(
+                f"[migration] Could not move {legacyDir!r} into assets/ "
+                f"({exc}); using the legacy location for this session.",
+                file=sys.stderr,
+            )
+            return legacyDir
+    # Neither exists: return the canonical path so the integrity check flags it.
+    return newDir
+
+
+charactersDir = _resolveCharactersDir()
 settingsPath = os.path.join(baseDir, "settings.json")
 docsDir = os.path.join(baseDir, "docs")
 profilesDir = os.path.join(baseDir, "Engine Profiles")
@@ -1827,18 +1862,29 @@ class RibbonEngineApp:
         This is the per-faction shirt pool that feeds the Template dropdown.
         Returns an empty list if the faction has no shirttemplates/ dir or it
         holds no PNGs.
+
+        Legacy fallback: the old convention was a single top-level
+        ``assets/<faction>/shirttemplate.png``. In-place updates preserve the
+        user's assets/ untouched, so those old files still sit at the top level
+        with no shirttemplates/ subdir. If the new folder is absent or empty we
+        fall back to that legacy file, so an updated install keeps its shirt.
         """
         if not factionKey:
             return []
-        shirtDir = os.path.join(assetsRoot, factionKey, "shirttemplates")
-        if not os.path.isdir(shirtDir):
-            return []
+        facDir = os.path.join(assetsRoot, factionKey)
+        shirtDir = os.path.join(facDir, "shirttemplates")
         out: list[tuple[str, str]] = []
-        for fn in sorted(os.listdir(shirtDir), key=str.lower):
-            full = os.path.join(shirtDir, fn)
-            if fn.lower().endswith(".png") and os.path.isfile(full):
-                out.append((os.path.splitext(fn)[0], full))
-        return out
+        if os.path.isdir(shirtDir):
+            for fn in sorted(os.listdir(shirtDir), key=str.lower):
+                full = os.path.join(shirtDir, fn)
+                if fn.lower().endswith(".png") and os.path.isfile(full):
+                    out.append((os.path.splitext(fn)[0], full))
+        if out:
+            return out
+        legacy = os.path.join(facDir, "shirttemplate.png")
+        if os.path.isfile(legacy):
+            return [("shirttemplate", legacy)]
+        return []
 
     def _factionShirtPath(self, factionKey: str) -> str:
         """Return the faction's default shirt-preview PNG, or '' if it has none.
