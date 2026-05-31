@@ -178,7 +178,7 @@ METADATA_SCHEMA_VERSION = 2
 
 # The app's own release version, compared against the latest GitHub Release tag
 # by the self-updater. Keep this in lock-step with the pushed ``vX.Y`` tag.
-APP_VERSION = "1.4.6"
+APP_VERSION = "1.4.7"
 
 
 class _Tooltip:
@@ -1436,7 +1436,7 @@ class RibbonEngineApp:
         # Drag-to-place runtime state — populated in mouse callbacks.
         self._dragState: Optional[dict] = None
 
-        self.root.title("Ribbon Engine")
+        self.root.title(f"Ribbon Engine v{APP_VERSION}")
         self.root.geometry("700x500")
         self.root.option_add("*Font", ("Tahoma", 9))
         self.recentFiles: list[str] = [
