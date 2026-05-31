@@ -4,13 +4,13 @@ A tool that builds **faction-themed award ribbons** for Roblox UGC. Pick a
 faction, tick the awards/ribbons/commendations you want, type a name, and
 the engine outputs a finished 128×128 PNG you can upload.
 
-> **New here? Skip straight to [INSTALLATION.md](INSTALLATION.md).**
+> **New here? Skip straight to [INSTALLATION.md](docs/INSTALLATION.md).**
 > That file walks you through getting the engine running on Windows, Mac,
 > or Linux step by step.
 
 This README explains what the engine *is* and how it works. For deep faction
-config (palettes, recolor knobs, schema), see [FACTIONS.md](FACTIONS.md).
-For the headless command-line renderer, see [CLI.md](CLI.md).
+config (palettes, recolor knobs, schema), see [FACTIONS.md](docs/FACTIONS.md).
+For the headless command-line renderer, see [CLI.md](docs/CLI.md).
 
 ## What it does, in plain English
 
@@ -54,15 +54,15 @@ Ribbon Engine v3/
 │   │   │   └── *.png.meta.json  #  Optional per-ribbon recolor overrides
 │   │   ├── awards/          #     Medals (never recolored)
 │   │   └── commendations/   #     Gorgets, badges, commendations (never recolored)
-│   └── <FACTION>/           #   One tree per faction. Same three subfolders.
-│       ├── shirttemplate.png  #   Optional: shirt preview shown when this faction is active
-│       ├── ribbons/
-│       ├── awards/
-│       └── commendations/
+│   ├── <FACTION>/           #   One tree per faction. Same subfolders.
+│   │   ├── ribbons/
+│   │   ├── awards/
+│   │   ├── commendations/
+│   │   └── shirttemplates/  #     Optional: shirt PNGs for this faction's overlay dropdown
+│   └── Characters/          #   Letter tiles for the nametape
 │
 ├── Engine Profiles/         # Where stuff goes on the 128×128 canvas
 ├── templates/               # Optional shirt templates for preview overlay
-├── Characters/              # Letter tiles for the nametape
 ├── loadouts/                # Your saved presets (created on first save)
 ├── ribbonoutput/            # Where generated/exported PNGs land
 └── settings.json            # Your preferences (auto-managed)
@@ -76,7 +76,7 @@ that faction. To restrict a recipient, ship them only the
 
 ## Running the engine
 
-See [INSTALLATION.md](INSTALLATION.md) for the full setup steps. Once
+See [INSTALLATION.md](docs/INSTALLATION.md) for the full setup steps. Once
 installed, the short version is:
 
 - **Windows:** download the latest release, unzip it, and double-click
@@ -89,7 +89,7 @@ installed, the short version is:
 > The Windows `.exe` is built automatically from the source by GitHub
 > Actions on every release tag, so it always matches the code here.
 > Developers who want to run from source on Windows can use the manual
-> `python ribbonengine.py` steps in [INSTALLATION.md](INSTALLATION.md).
+> `python ribbonengine.py` steps in [INSTALLATION.md](docs/INSTALLATION.md).
 
 ### Staying up to date (Windows `.exe`)
 
@@ -100,8 +100,9 @@ quietly asks GitHub whether a newer release exists; if one does, it pops up an
 relaunches — no manual unzip, no re-copying folders.
 
 - **Your data is safe.** The updater refreshes only the program files. Your
-  `factions/`, `loadouts/`, `Characters/`, `Engine Profiles/`, `assets/`, and
-  `settings.json` are explicitly excluded from the copy, so nothing you've
+  `factions/`, `loadouts/`, `Engine Profiles/`, `assets/` (which now holds
+  `Characters/`), and `settings.json` are explicitly excluded from the copy,
+  so nothing you've
   customized is touched.
 - **You're in control.** The dialog has **Later** (ask again next launch),
   **Skip This Version** (don't nag about this one again), and **Release Page**
@@ -191,21 +192,22 @@ uniform shirt so you can judge placement in context. This is preview-only — it
 never changes the exported 128×128 PNG.
 
 The shirt **follows the faction automatically.** When you switch factions the
-engine looks inside `assets/<FACTION>/` for a shirt image and swaps the preview
-to it:
+engine looks inside `assets/<FACTION>/shirttemplates/` for shirt images and
+swaps the preview:
 
 1. It prefers a file named exactly **`shirttemplate.png`**.
-2. Failing that, it uses the **first top-level PNG** in that faction's folder,
-   so a faction can ship any single shirt image under any name.
-3. If the faction has no top-level PNG, the preview keeps the profile/ANRO
-   default — so the stock install is unchanged.
+2. Failing that, it uses the **first PNG** in `shirttemplates/`, so a faction
+   can ship any single shirt image under any name.
+3. If the faction's `shirttemplates/` is empty, the preview keeps the
+   profile/ANRO default — so the stock install is unchanged.
 
-To give a faction its own uniform, drop a `shirttemplate.png` into
-`assets/<FACTION>/` (alongside the `ribbons/`, `awards/`, `commendations/`
-folders — **not** inside them). It ships in the release zip automatically. You
-can also still pick any template manually from the **Shirt preview** dropdown,
-or drop extra PNGs into the `templates/` folder to make them selectable for
-every faction.
+To give a faction its own uniform, drop PNGs into
+`assets/<FACTION>/shirttemplates/` (a sibling of the `ribbons/`, `awards/`,
+`commendations/` folders). **Every** PNG in that folder shows up in the
+**Shirt preview** dropdown while the faction is active, so you can ship several
+shirt variants and switch between them. They ship in the release zip
+automatically. You can also drop shared PNGs into the root `templates/` folder
+to make them selectable for every faction.
 
 > The ribbons are cropped onto the chest using the profile's `front_crop_box` /
 > `template_size`. If a faction's shirt is framed differently from the reference
@@ -330,12 +332,12 @@ Drop the PNG into `assets/AOER/<type>/`, where `<type>` is `ribbons`,
 
 ### A new faction
 
-Create `factions/<KEY>.json` (see [FACTIONS.md](FACTIONS.md) for the
+Create `factions/<KEY>.json` (see [FACTIONS.md](docs/FACTIONS.md) for the
 schema), then create `assets/<KEY>/ribbons/`, `…/awards/`, and
 `…/commendations/` and populate them. The faction shows up in the
-dropdown on next launch. Optionally drop a `shirttemplate.png` directly in
-`assets/<KEY>/` to give the faction its own shirt-preview overlay (see
-[Shirt preview overlay](#shirt-preview-overlay)).
+dropdown on next launch. Optionally drop shirt PNGs into
+`assets/<KEY>/shirttemplates/` to give the faction its own shirt-preview
+overlays (see [Shirt preview overlay](#shirt-preview-overlay)).
 
 ### A different canvas layout (medal positions, ribbon rows)
 
@@ -478,7 +480,7 @@ terminal if it finds:
   doesn't). The warning tells you exactly which paths collide.
 
 You can also run the validator from the command line — see
-[CLI.md](CLI.md). It's safe to run in CI: it exits with code `1` if
+[CLI.md](docs/CLI.md). It's safe to run in CI: it exits with code `1` if
 there are any warnings and `0` if everything's clean.
 
 ## Distributing to a faction recipient
@@ -504,7 +506,7 @@ Should print `OK` after the full suite (faction recolor, the headless
 renderer, layout profiles, and the self-updater). These are display-free,
 so they run on a headless box and in CI — a red test blocks the `.exe`
 build and release. If they don't pass, something is wrong with the install
-— check [INSTALLATION.md](INSTALLATION.md).
+— check [INSTALLATION.md](docs/INSTALLATION.md).
 
 ## Keyboard shortcuts
 
@@ -584,7 +586,7 @@ disk at startup. To wipe it entirely, close the engine, edit
 
 - Clipboard paste works out of the box on Windows and macOS. On Linux
   it additionally needs `wl-paste` (Wayland) or `xclip` (X11) — see the
-  Linux section of [INSTALLATION.md](INSTALLATION.md).
+  Linux section of [INSTALLATION.md](docs/INSTALLATION.md).
 - Theme switching repaints most widgets but a restart is needed for a
   fully consistent look.
 - Faction directory names are case-sensitive on Linux. Use the same

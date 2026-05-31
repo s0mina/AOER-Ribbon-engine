@@ -10,8 +10,6 @@ dist/
 *.zip
 
 # Local user output (don't ship a user's renders to the repo)
-out/*
-!out/.gitkeep
 ribbonoutput/*
 !ribbonoutput/.gitkeep
 

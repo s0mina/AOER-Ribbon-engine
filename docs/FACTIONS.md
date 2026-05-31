@@ -5,7 +5,7 @@ recolor pipeline turns one ribbon image into a different-colored ribbon
 for every faction.
 
 > **Just want to run the engine?** See [INSTALLATION.md](INSTALLATION.md).
-> **Want to know what the GUI does?** See [README.md](README.md).
+> **Want to know what the GUI does?** See [README.md](../README.md).
 
 ## How it fits together
 
@@ -62,11 +62,17 @@ Field reference:
 assets/NES/
 ├── ribbons/        # drop *.png files in here
 ├── awards/         # *.png medal art
-└── commendations/  # *.png gorgets/badges/commendations
+├── commendations/  # *.png gorgets/badges/commendations
+└── shirttemplates/ # optional *.png shirt-preview overlays for this faction
 ```
 
-You can leave any of the three empty if NES doesn't have assets of
+You can leave any of these empty if NES doesn't have assets of
 that type. Just create the folder so the engine knows it exists.
+
+`shirttemplates/` is optional. Every PNG you drop there appears in the
+**Shirt preview** dropdown while NES is active; a file named exactly
+`shirttemplate.png` is used as the default. These are preview-only and
+never recolored.
 
 ### That's it
 

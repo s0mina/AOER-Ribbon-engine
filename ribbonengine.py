@@ -139,8 +139,9 @@ def scanAssetTree() -> tuple[list[str], dict[str, list[str]]]:
                 by_hash.setdefault(digest, []).append(rel)
     duplicates = {h: paths for h, paths in by_hash.items() if len(paths) > 1}
     return illegal, duplicates
-charactersDir = os.path.join(baseDir, "Characters")
+charactersDir = os.path.join(assetsRoot, "Characters")
 settingsPath = os.path.join(baseDir, "settings.json")
+docsDir = os.path.join(baseDir, "docs")
 profilesDir = os.path.join(baseDir, "Engine Profiles")
 legacyProfilePath = os.path.join(baseDir, "engine_profile.json")
 defaultProfileName = "default"
@@ -1819,27 +1820,41 @@ class RibbonEngineApp:
             return path
         return os.path.join(baseDir, path)
 
-    def _factionShirtPath(self, factionKey: str) -> str:
-        """Return the faction's own shirt-preview PNG, or '' if it has none.
+    def _factionShirtTemplates(self, factionKey: str) -> list[tuple[str, str]]:
+        """Return [(label, abs_path)] for every PNG in a faction's
+        ``assets/<faction>/shirttemplates/`` folder, sorted by name.
 
-        Looks at the *top level* of ``assets/<faction>/`` (not the ribbons/
-        awards/commendations subdirs). Prefers a file literally named
-        ``shirttemplate.png``; otherwise falls back to the first top-level PNG,
-        so a faction can ship any single shirt image and have it picked up.
+        This is the per-faction shirt pool that feeds the Template dropdown.
+        Returns an empty list if the faction has no shirttemplates/ dir or it
+        holds no PNGs.
         """
         if not factionKey:
-            return ""
-        facDir = os.path.join(assetsRoot, factionKey)
-        if not os.path.isdir(facDir):
-            return ""
-        preferred = os.path.join(facDir, "shirttemplate.png")
-        if os.path.isfile(preferred):
-            return preferred
-        for fn in sorted(os.listdir(facDir), key=str.lower):
-            full = os.path.join(facDir, fn)
+            return []
+        shirtDir = os.path.join(assetsRoot, factionKey, "shirttemplates")
+        if not os.path.isdir(shirtDir):
+            return []
+        out: list[tuple[str, str]] = []
+        for fn in sorted(os.listdir(shirtDir), key=str.lower):
+            full = os.path.join(shirtDir, fn)
             if fn.lower().endswith(".png") and os.path.isfile(full):
-                return full
-        return ""
+                out.append((os.path.splitext(fn)[0], full))
+        return out
+
+    def _factionShirtPath(self, factionKey: str) -> str:
+        """Return the faction's default shirt-preview PNG, or '' if it has none.
+
+        Reads ``assets/<faction>/shirttemplates/``. Prefers a file literally
+        named ``shirttemplate.png``; otherwise uses the first PNG in the folder,
+        so a faction with a single shirt just works and one with several gets a
+        deterministic default (the rest are still selectable in the dropdown).
+        """
+        templates = self._factionShirtTemplates(factionKey)
+        if not templates:
+            return ""
+        for label, path in templates:
+            if os.path.basename(path).lower() == "shirttemplate.png":
+                return path
+        return templates[0][1]
 
     def _applyFactionShirt(self) -> None:
         """Point the shirt preview at the active faction's template, if it has one.
@@ -2521,15 +2536,20 @@ class RibbonEngineApp:
     def _listOverlayTemplates(self) -> list[tuple[str, str]]:
         """Return [(label, abs_path)] of every shirt template the user can pick.
 
-        Sources: every PNG in templates/, plus the legacy ANRO template inside
-        Characters/, plus the user's current overlaySourcePath if it lives
-        somewhere else (e.g. a profile-defined path).
+        Sources, in priority order (first wins on a label clash):
+          * the active faction's ``assets/<faction>/shirttemplates/`` PNGs,
+          * every PNG in the global templates/ dir,
+          * the legacy ANRO template inside Characters/,
+          * the current overlaySourcePath if it lives somewhere else
+            (e.g. a profile-defined path).
         """
         seen: dict[str, str] = {}
+        for label, path in self._factionShirtTemplates(getattr(self, "activeFactionKey", "")):
+            seen.setdefault(label, path)
         if os.path.isdir(templatesDir):
             for fn in sorted(os.listdir(templatesDir), key=str.lower):
                 if fn.lower().endswith(".png"):
-                    seen[os.path.splitext(fn)[0]] = os.path.join(templatesDir, fn)
+                    seen.setdefault(os.path.splitext(fn)[0], os.path.join(templatesDir, fn))
         if os.path.exists(previewOverlayPath):
             seen.setdefault(os.path.splitext(os.path.basename(previewOverlayPath))[0], previewOverlayPath)
         current = (self.overlaySourcePath or "").strip()
@@ -2819,15 +2839,21 @@ class RibbonEngineApp:
         menubar.add_cascade(label="Tools", menu=toolsMenu)
 
         helpMenu = tk.Menu(menubar, tearoff=False)
-        md_files = sorted(
-            f for f in os.listdir(baseDir)
-            if f.lower().endswith(".md") and os.path.isfile(os.path.join(baseDir, f))
-        )
-        if md_files:
-            for fname in md_files:
+        # README.md lives at the project root; the rest of the docs live in
+        # docs/. List both so every .md is reachable from Help, root first.
+        md_entries: list[tuple[str, str]] = []
+        rootReadme = os.path.join(baseDir, "README.md")
+        if os.path.isfile(rootReadme):
+            md_entries.append(("README.md", rootReadme))
+        if os.path.isdir(docsDir):
+            for f in sorted(os.listdir(docsDir), key=str.lower):
+                if f.lower().endswith(".md") and os.path.isfile(os.path.join(docsDir, f)):
+                    md_entries.append((f, os.path.join(docsDir, f)))
+        if md_entries:
+            for label, path in md_entries:
                 helpMenu.add_command(
-                    label=fname,
-                    command=lambda f=fname: self._openMarkdownViewer(os.path.join(baseDir, f)),
+                    label=label,
+                    command=lambda p=path: self._openMarkdownViewer(p),
                 )
         else:
             helpMenu.add_command(label="(no .md files found)", state="disabled")

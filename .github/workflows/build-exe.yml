@@ -84,16 +84,15 @@ jobs:
         shell: pwsh
         run: |
           $dest = "dist/AOER-Ribbon-engine"
-          $folders = @("assets", "factions", "Characters", "templates",
-                       "Engine Profiles", "loadouts", "out", "ribbonoutput")
+          $folders = @("assets", "factions", "templates", "docs",
+                       "Engine Profiles", "loadouts", "ribbonoutput")
           foreach ($f in $folders) {
             if (Test-Path $f) {
               Copy-Item -Recurse -Force $f "$dest/$f"
             }
           }
-          foreach ($file in @("settings.json", "README.md", "FACTIONS.md", "CLI.md", "INSTALLATION.md")) {
-            if (Test-Path $file) { Copy-Item -Force $file "$dest/$file" }
-          }
+          if (Test-Path "settings.json") { Copy-Item -Force "settings.json" "$dest/settings.json" }
+          if (Test-Path "README.md") { Copy-Item -Force "README.md" "$dest/README.md" }
 
       - name: Zip it up
         # Bake the version into the asset name on tagged builds so users can
