@@ -139,12 +139,8 @@ class RibbonRenderer:
         slots: list[tuple[int, int]] = []
         y = originY
         for rowNum in range(1, maxRows + 1):
-            if rowNum < lp.right_start_row:
-                cap, alignRight = lp.centered_row_capacity, False
-            elif rowNum == lp.right_start_row:
-                cap, alignRight = lp.right_first_row_capacity, True
-            else:
-                cap, alignRight = lp.right_subsequent_row_capacity, True
+            cap = lp.capacity_for_row(rowNum)
+            alignRight = rowNum >= lp.right_start_row
             widthWithSpacing = cap * ribbonW - max(cap - 1, 0)
             if alignRight:
                 # Match _rightAlignedRowStart: rightEdge = areaX + areaWidth - 1
@@ -235,10 +231,22 @@ class RibbonRenderer:
             # Any medal can sit in any of the 6 slots ("bonus" is really just
             # an overflow set of awards). Explicit slot lists allow duplicates
             # (e.g. triple Diamond Medal); the checkbox-derived fallback dedupes.
-            if awardSlots is not None or bonusSlots is not None:
+            # ``fixedSlots`` is True when the medals come from the dropdowns,
+            # where the slot index is meaningful: slot 1 = left notch, slot 2 =
+            # centre, slot 3 = right. In that mode each medal is anchored to its
+            # own slot centre and is unaffected by the other slots (empties stay
+            # empty). The checkbox/selectedNames fallback has no slot concept, so
+            # it keeps the older "centre the group" behaviour.
+            fixedSlots = awardSlots is not None or bonusSlots is not None
+            awardSlotItems: list = []
+            bonusSlotItems: list = []
+            if fixedSlots:
                 medalByName = {it.name: it for it in self.groups["sacks"]}
-                awardMedals = [medalByName[n] for n in (awardSlots or []) if n and n in medalByName]
-                bonusMedals = [medalByName[n] for n in (bonusSlots or []) if n and n in medalByName]
+                # Keep one entry per slot, None where the dropdown is empty/NONE.
+                awardSlotItems = [medalByName.get(n) if n else None for n in (awardSlots or [])]
+                bonusSlotItems = [medalByName.get(n) if n else None for n in (bonusSlots or [])]
+                awardMedals = [it for it in awardSlotItems if it is not None]
+                bonusMedals = [it for it in bonusSlotItems if it is not None]
             else:
                 selectedMedals = selectedItems("sacks")
                 awardMedals = [item for item in selectedMedals if item.name in self.award_medal_names]
@@ -248,6 +256,7 @@ class RibbonRenderer:
             useBadge = bool(departmentBadge) and departmentBadge != "NONE"
             if useBadge:
                 bonusMedals = []
+                bonusSlotItems = []
 
             # Cap each row at the per-side limit.
             if len(awardMedals) > lp.max_medals_per_side:
@@ -298,6 +307,8 @@ class RibbonRenderer:
                     return [int(baseX + (i - (count - 1) / 2) * spacing) for i in range(count)]
 
                 def pasteRow(items, baseX, offsets, spacingOverride):
+                    # Group-centred fallback (checkbox path): all medals share one
+                    # centred run, so their positions shift with the count.
                     spacing = rowSpacing(items, spacingOverride)
                     centers = rowCenters(baseX, len(items), spacing)
                     for i, (item, cx) in enumerate(zip(items, centers)):
@@ -311,8 +322,34 @@ class RibbonRenderer:
                         _record_paste(baseImg, piece, (int(cx - w / 2) + ox, yTop + oy), item.name, "sacks")
                         usedSlots["sacks"].add(item.name)
 
-                pasteRow(awardMedals, awardBaseX, lp.award_slot_offsets, lp.award_row_spacing)
-                pasteRow(bonusMedals, bonusBaseX, lp.bonus_slot_offsets, lp.bonus_row_spacing)
+                def pasteFixedSlots(slotItems, baseX, offsets, spacingOverride):
+                    # Dropdown path: one fixed grid of `max_medals_per_side`
+                    # slots centred on baseX. Each medal sits at its own slot
+                    # centre regardless of which other slots are filled — slot 1
+                    # left, the middle slot dead-centre on baseX (odd slot count),
+                    # the last slot right. Empty slots leave a gap.
+                    nslots = lp.max_medals_per_side
+                    present = [it for it in slotItems[:nslots] if it is not None]
+                    spacing = rowSpacing(present, spacingOverride)
+                    centers = rowCenters(baseX, nslots, spacing)
+                    for i, item in enumerate(slotItems[:nslots]):
+                        if item is None:
+                            continue
+                        piece = safeLoad(item)
+                        if piece is None:
+                            continue
+                        w, _ = piece.size
+                        ox, oy = slotOffset(offsets, i)
+                        cx = centers[i]
+                        _record_paste(baseImg, piece, (int(cx - w / 2) + ox, yTop + oy), item.name, "sacks")
+                        usedSlots["sacks"].add(item.name)
+
+                if fixedSlots:
+                    pasteFixedSlots(awardSlotItems, awardBaseX, lp.award_slot_offsets, lp.award_row_spacing)
+                    pasteFixedSlots(bonusSlotItems, bonusBaseX, lp.bonus_slot_offsets, lp.bonus_row_spacing)
+                else:
+                    pasteRow(awardMedals, awardBaseX, lp.award_slot_offsets, lp.award_row_spacing)
+                    pasteRow(bonusMedals, bonusBaseX, lp.bonus_slot_offsets, lp.bonus_row_spacing)
 
                 # Department badge occupies the bonus (nametape) row centre.
                 if useBadge:
@@ -433,15 +470,8 @@ class RibbonRenderer:
             rowNumber = 1
 
             while selectedRibbons:
-                if rowNumber < lp.right_start_row:
-                    maxInRow = lp.centered_row_capacity
-                    alignRight = False
-                elif rowNumber == lp.right_start_row:
-                    maxInRow = lp.right_first_row_capacity
-                    alignRight = True
-                else:
-                    maxInRow = lp.right_subsequent_row_capacity
-                    alignRight = True
+                maxInRow = lp.capacity_for_row(rowNumber)
+                alignRight = rowNumber >= lp.right_start_row
 
                 row = selectedRibbons[:maxInRow]
                 selectedRibbons = selectedRibbons[maxInRow:]

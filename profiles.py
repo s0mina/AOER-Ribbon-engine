@@ -19,6 +19,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+# How many ribbon rows the engine lays out / the Profile Editor exposes.
+MAX_RIBBON_ROWS = 8
+
 # Order matters only for display; the renderer looks parts up by name.
 PART_COORDS_KEYS: tuple[str, ...] = (
     "corpus",
@@ -107,6 +110,12 @@ class LayoutProfile:
     right_start_row: int = 5
     right_first_row_capacity: int = 3
     right_subsequent_row_capacity: int = 2
+    # Explicit per-row ribbon capacities (1st row first). The renderer reads
+    # capacities from here; ``right_start_row`` still decides alignment (rows
+    # below it center, that row and above right-align). Defaults reproduce the
+    # legacy formula (4,4,4,4 centered, then 3, then 2,2,2) so a profile that
+    # only sets the old centered/first/subsequent keys parses identically.
+    row_capacities: tuple[int, ...] = (4, 4, 4, 4, 3, 2, 2, 2)
     # Medal slot fill order ("left"/"middle"/"right"). Defaults match the
     # canonical medalSingleOrder / medalMultiOrder globals in ribbonengine.py.
     medal_single_order: tuple[str, ...] = ("middle", "left", "right")
@@ -216,6 +225,7 @@ class LayoutProfile:
                     defaults.right_subsequent_row_capacity,
                 ),
             ),
+            row_capacities=_parse_row_capacities(rows, defaults),
             medal_single_order=single,
             medal_multi_order=multi,
             award_slot_offsets=award_off,
@@ -223,6 +233,15 @@ class LayoutProfile:
             award_row_spacing=award_spacing,
             bonus_row_spacing=bonus_spacing,
         )
+
+    def capacity_for_row(self, row_num: int) -> int:
+        """Max ribbons in ``row_num`` (1-based). Rows past the configured list
+        reuse the last row's capacity so the layout never runs out of rows."""
+        caps = self.row_capacities
+        if not caps:
+            return 1
+        idx = max(0, min(row_num, len(caps)) - 1)
+        return caps[idx]
 
     def with_part_coords(self, coords: dict[str, tuple[int, int]]) -> "LayoutProfile":
         """Return a copy with ``part_coords`` replaced (handy in tests)."""
@@ -246,6 +265,38 @@ class LayoutProfile:
         whole composite in the top-left corner. This is the strong signal that a
         profile's ``part_coords`` were never populated (the northwest bug)."""
         return all(x == 0 and y == 0 for (x, y) in self.part_coords.values())
+
+
+def _parse_row_capacities(rows: dict, defaults: "LayoutProfile") -> tuple[int, ...]:
+    """Resolve the 8 per-row ribbon capacities from a ``ribbon_rows`` block.
+
+    Two schemas are supported, newest first:
+      * explicit flat keys ``row_1_capacity`` … ``row_8_capacity``
+      * legacy ``centered_row_capacity`` / ``first_right_row_capacity`` /
+        ``subsequent_right_row_capacity`` (+ ``right_start_row``), which feed
+        the old formula: rows below the start row use the centered capacity,
+        the start row uses the first-right capacity, rows above use the
+        subsequent capacity.
+
+    Any row missing an explicit ``row_N_capacity`` key falls back to the legacy
+    formula value for that row, so old profiles parse byte-identically and a
+    half-filled new block still makes sense.
+    """
+    start = max(1, _safe_int(rows.get("right_start_row"), defaults.right_start_row))
+    cen = max(1, _safe_int(rows.get("centered_row_capacity"), defaults.centered_row_capacity))
+    fr = max(1, _safe_int(rows.get("first_right_row_capacity"), defaults.right_first_row_capacity))
+    sub = max(
+        1, _safe_int(rows.get("subsequent_right_row_capacity"), defaults.right_subsequent_row_capacity)
+    )
+    out: list[int] = []
+    for r in range(1, MAX_RIBBON_ROWS + 1):
+        formula = cen if r < start else fr if r == start else sub
+        key = f"row_{r}_capacity"
+        if key in rows:
+            out.append(max(1, _safe_int(rows.get(key), formula)))
+        else:
+            out.append(formula)
+    return tuple(out)
 
 
 def _parse_order(raw, default: tuple[str, ...]) -> tuple[str, ...]:

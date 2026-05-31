@@ -132,10 +132,18 @@ precedence for the slots you've manually filled.
 The **Awards** section has two mirrored medal rows, each with up to 3
 slots:
 
-- **Award medals (under ribbons)** — up to 3, render in a row centered
-  under the **ribbons** (right side).
-- **Bonus medals (under nametape)** — up to 3, render in a row centered
-  under the **nametape** (left side). Think of these as overflow awards.
+- **Award medals (under ribbons)** — up to 3, in fixed slots under the
+  **ribbons** (right side).
+- **Bonus medals (under nametape)** — up to 3, in fixed slots under the
+  **nametape** (left side). Think of these as overflow awards.
+
+The three slots are **fixed positions**, not a centered group: **slot 1 =
+left notch, slot 2 = centre, slot 3 = right notch**. A medal always sits
+on its own slot's notch and never moves because of what's in the other
+slots — so a single medal in slot 2 stays dead-centre, and filling slots 1
+and 2 puts them on the left and centre notches (they don't straddle the
+middle). The slot count is odd, so the middle slot lines up with the
+pocket's centre on the X axis.
 - Both dropdowns list the **full medal pool** — any medal can go in any
   slot, in either row. Duplicates are allowed (triple Diamond is legal).
 - Both rows share the same **Y anchor** (the `sacks` row) and are simple
@@ -337,6 +345,22 @@ Editor** (Tools → Profile Editor…) — it gives you a spinbox for every
 number and a Raw JSON tab as an escape hatch. Click **New…** next to
 the Profile dropdown to make a fresh profile by duplicating the current
 one.
+
+**Ribbon rows tab.** Ribbons fill from the bottom row upward. Two things
+control the rack shape:
+
+- **Right-align start row** — rows *below* this number are centered; this
+  row and everything above it are right-justified. That's the classic
+  military ribbon-rack look (centered bottom rows, right-aligned top rows).
+- **Row 1–8 capacity** — how many ribbons fit in each row, set
+  individually. Row 1 is the bottom row. Rows past 8 reuse row 8's
+  capacity, so you never run out of rows.
+
+In the JSON these are the `ribbon_rows` keys `right_start_row` and
+`row_1_capacity` … `row_8_capacity`. Older profiles that used the previous
+`centered_row_capacity` / `first_right_row_capacity` /
+`subsequent_right_row_capacity` keys still load unchanged — any row you
+don't set explicitly falls back to those old values.
 
 ### Moving or renaming a ribbon between factions
 

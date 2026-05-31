@@ -309,6 +309,52 @@ class MedalRowLayoutTests(unittest.TestCase):
         placements = self._render(renderer, awardSlots=["A", "A", "A", "A"])
         self.assertEqual(len(placements), 3)
 
+    def test_fixed_slot_position_is_independent_of_other_slots(self):
+        # The reported request: a medal must sit at ITS slot, unaffected by what
+        # else is selected. The middle-slot medal lands at the same x whether or
+        # not slots 1 and 3 are filled (no more "centre the group of two").
+        full = self._render(
+            self._make(LayoutProfile(), ["L", "M", "R"]),
+            awardSlots=["L", "M", "R"],
+        )
+        byname = {p["name"]: p for p in full}
+        mid_only = self._render(
+            self._make(LayoutProfile(), ["M"]),
+            awardSlots=["", "M", ""],
+        )
+        self.assertEqual(len(mid_only), 1)
+        self.assertEqual(mid_only[0]["x"], byname["M"]["x"])
+        # Slot order is left < middle < right.
+        self.assertLess(byname["L"]["x"], byname["M"]["x"])
+        self.assertLess(byname["M"]["x"], byname["R"]["x"])
+
+    def test_middle_slot_is_centred_on_the_pocket(self):
+        # Odd slot count => a true centre. With equal-width tiles the left and
+        # right slots are symmetric about the middle slot's x.
+        full = self._render(
+            self._make(LayoutProfile(), ["L", "M", "R"]),
+            awardSlots=["L", "M", "R"],
+        )
+        byname = {p["name"]: p for p in full}
+        self.assertEqual(byname["L"]["x"] + byname["R"]["x"], 2 * byname["M"]["x"])
+
+    def test_two_medals_in_slots_one_and_two_do_not_straddle_centre(self):
+        # slot1 + slot2 selected: they occupy the left and middle notches, NOT a
+        # pair centred on the pocket. Verified by comparing slot 2 here to slot 2
+        # in a full 3-medal layout — it must be identical.
+        full = self._render(
+            self._make(LayoutProfile(), ["L", "M", "R"]),
+            awardSlots=["L", "M", "R"],
+        )
+        two = self._render(
+            self._make(LayoutProfile(), ["L", "M"]),
+            awardSlots=["L", "M", ""],
+        )
+        full_by = {p["name"]: p for p in full}
+        two_by = {p["name"]: p for p in two}
+        self.assertEqual(two_by["L"]["x"], full_by["L"]["x"])
+        self.assertEqual(two_by["M"]["x"], full_by["M"]["x"])
+
 
 if __name__ == "__main__":
     unittest.main()

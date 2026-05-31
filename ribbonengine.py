@@ -163,7 +163,7 @@ METADATA_SCHEMA_VERSION = 2
 
 # The app's own release version, compared against the latest GitHub Release tag
 # by the self-updater. Keep this in lock-step with the pushed ``vX.Y`` tag.
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 
 
 class _Tooltip:
@@ -343,6 +343,9 @@ ribbonCenteredRowCapacity = 4
 ribbonRightStartRow = 5
 ribbonRightFirstRowCapacity = 3
 ribbonRightSubsequentRowCapacity = 2
+# Explicit per-row ribbon capacities (1st row first). right_start_row above
+# still controls alignment (rows below it center, that row + above right-align).
+ribbonRowCapacities = [4, 4, 4, 4, 3, 2, 2, 2]
 medalSingleOrder = ("middle", "left", "right")
 medalMultiOrder = ("left", "middle", "right")
 overlayTemplateSize = (585, 559)
@@ -371,10 +374,15 @@ defaultProfile = {
         "multi_order": list(medalMultiOrder),
     },
     "ribbon_rows": {
-        "centered_row_capacity": ribbonCenteredRowCapacity,
         "right_start_row": ribbonRightStartRow,
-        "first_right_row_capacity": ribbonRightFirstRowCapacity,
-        "subsequent_right_row_capacity": ribbonRightSubsequentRowCapacity,
+        "row_1_capacity": ribbonRowCapacities[0],
+        "row_2_capacity": ribbonRowCapacities[1],
+        "row_3_capacity": ribbonRowCapacities[2],
+        "row_4_capacity": ribbonRowCapacities[3],
+        "row_5_capacity": ribbonRowCapacities[4],
+        "row_6_capacity": ribbonRowCapacities[5],
+        "row_7_capacity": ribbonRowCapacities[6],
+        "row_8_capacity": ribbonRowCapacities[7],
     },
     # Per-slot (x, y) nudges added to each medal's auto-computed pocket
     # position. award_* applies to the award row (under the ribbons); bonus_*
@@ -1079,6 +1087,7 @@ def applyProfile(profile: dict) -> None:
     global ribbonRightStartRow
     global ribbonRightFirstRowCapacity
     global ribbonRightSubsequentRowCapacity
+    global ribbonRowCapacities
     global medalSingleOrder
     global medalMultiOrder
     global expandedIcon
@@ -1133,6 +1142,22 @@ def applyProfile(profile: dict) -> None:
         ribbonRightStartRow = max(1, _safeInt(rowCfg.get("right_start_row", ribbonRightStartRow), ribbonRightStartRow))
         ribbonRightFirstRowCapacity = max(1, _safeInt(rowCfg.get("first_right_row_capacity", ribbonRightFirstRowCapacity), ribbonRightFirstRowCapacity))
         ribbonRightSubsequentRowCapacity = max(1, _safeInt(rowCfg.get("subsequent_right_row_capacity", ribbonRightSubsequentRowCapacity), ribbonRightSubsequentRowCapacity))
+        # Explicit per-row capacities; any row that omits row_N_capacity falls
+        # back to the legacy formula value (centered / first-right / subsequent
+        # by position relative to right_start_row).
+        newCaps = []
+        for r in range(1, 9):
+            formula = (
+                ribbonCenteredRowCapacity if r < ribbonRightStartRow
+                else ribbonRightFirstRowCapacity if r == ribbonRightStartRow
+                else ribbonRightSubsequentRowCapacity
+            )
+            key = f"row_{r}_capacity"
+            if key in rowCfg:
+                newCaps.append(max(1, _safeInt(rowCfg.get(key, formula), formula)))
+            else:
+                newCaps.append(formula)
+        ribbonRowCapacities = newCaps
 
     aliases = profile.get("character_aliases")
     if isinstance(aliases, dict):
@@ -4589,13 +4614,20 @@ class RibbonEngineApp:
         # Ribbon rows tab
         rowsTab = ttk.Frame(notebook, padding=10)
         notebook.add(rowsTab, text="Ribbon rows")
-        for i, (label, key) in enumerate([
-            ("Centered row capacity", "centered_row_capacity"),
-            ("Right-align start row", "right_start_row"),
-            ("First right row capacity", "first_right_row_capacity"),
-            ("Subsequent right row capacity", "subsequent_right_row_capacity"),
-        ]):
-            addIntRow(rowsTab, i, label, ["ribbon_rows", key])
+        # right_start_row controls alignment (rows below it center, that row and
+        # above right-align); the eight capacity fields set how many ribbons fit
+        # in each row. Defaults fall back to the legacy formula if a key is absent.
+        _rowDefaults = {
+            1: ribbonRowCapacities[0], 2: ribbonRowCapacities[1],
+            3: ribbonRowCapacities[2], 4: ribbonRowCapacities[3],
+            5: ribbonRowCapacities[4], 6: ribbonRowCapacities[5],
+            7: ribbonRowCapacities[6], 8: ribbonRowCapacities[7],
+        }
+        addIntRow(rowsTab, 0, "Right-align start row", ["ribbon_rows", "right_start_row"],
+                  default=ribbonRightStartRow)
+        for n in range(1, 9):
+            addIntRow(rowsTab, n, f"Row {n} capacity",
+                      ["ribbon_rows", f"row_{n}_capacity"], default=_rowDefaults[n])
 
         # Medal offsets tab — per-slot (x, y) nudges added to each medal's
         # auto-computed pocket position. 0 leaves the auto layout unchanged.
@@ -5278,10 +5310,10 @@ class RibbonEngineApp:
 
         Returns `(rects, total_w, total_h)` where each rect is
         `(slot_idx, x1, y1, x2, y2)` in pixels relative to the canvas
-        origin. Row capacities come from the active engine profile
-        (`ribbonCenteredRowCapacity`, `ribbonRightFirstRowCapacity`,
-        `ribbonRightSubsequentRowCapacity`) so adding rows or capacity
-        in the profile JSON expands the panel with zero code changes.
+        origin. Per-row capacities come from the active engine profile
+        (`ribbonRowCapacities`, one entry per row) and `ribbonRightStartRow`
+        decides which rows right-align, so editing capacities in the profile
+        JSON expands the panel with zero code changes.
 
         Row 1 (the bottom-most ribbon row in the rendered ribbon stack)
         is drawn at the *bottom* of the panel, matching how ribbons
@@ -5290,18 +5322,21 @@ class RibbonEngineApp:
         `_computeRibbonSlotGrid` so the two stay 1:1.
         """
         cw, ch, gap = self._MANUAL_CELL_W, self._MANUAL_CELL_H, self._MANUAL_CELL_GAP
-        max_cap = max(ribbonCenteredRowCapacity, ribbonRightFirstRowCapacity, ribbonRightSubsequentRowCapacity)
+
+        def cap_for(row_num: int) -> int:
+            if not ribbonRowCapacities:
+                return 1
+            idx = max(0, min(row_num, len(ribbonRowCapacities)) - 1)
+            return ribbonRowCapacities[idx]
+
+        max_cap = max(ribbonRowCapacities) if ribbonRowCapacities else 1
         total_w = max_cap * cw + (max_cap - 1) * gap
         total_h = self._MANUAL_GRID_ROWS * ch + (self._MANUAL_GRID_ROWS - 1) * gap
         rects: list[tuple[int, int, int, int, int]] = []
         slot_idx = 0
         for row_num in range(1, self._MANUAL_GRID_ROWS + 1):
-            if row_num < ribbonRightStartRow:
-                cap, align_right = ribbonCenteredRowCapacity, False
-            elif row_num == ribbonRightStartRow:
-                cap, align_right = ribbonRightFirstRowCapacity, True
-            else:
-                cap, align_right = ribbonRightSubsequentRowCapacity, True
+            cap = cap_for(row_num)
+            align_right = row_num >= ribbonRightStartRow
             row_w = cap * cw + (cap - 1) * gap
             x_start = (total_w - row_w) if align_right else (total_w - row_w) // 2
             # Row 1 is the bottom-most ribbon row; mirror that in the panel.
